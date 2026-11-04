@@ -9,10 +9,24 @@ description = "Dependency-free Skills MCP server for Nuvel skill hubs."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-# A copy of the repository LICENSE: license files must sit inside the package root.
 license-files = ["LICENSE"]
 authors = [{ name = "Albert Folch" }]
+# The server itself needs only the standard library. Optional features import
+# their drivers lazily, when configured, and are declared here as extras.
 dependencies = []
+
+[project.optional-dependencies]
+# NUVEL_MCP_DATABASE_URL: the Postgres stores (psycopg, psycopg_pool).
+postgres = ["psycopg[binary,pool]>=3.2,<4"]
+# serve --with-org-memory: template resolution via nuvel.memory from nuvel-cli.
+org-memory = ["nuvel-cli>=0.4"]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/Folken2/nuvel-mcp"
+Repository = "https://github.com/Folken2/nuvel-mcp"
+Issues = "https://github.com/Folken2/nuvel-mcp/issues"
+Changelog = "https://github.com/Folken2/nuvel-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 nuvel-mcp = "nuvel_mcp.cli:main"

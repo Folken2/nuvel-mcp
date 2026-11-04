@@ -1,0 +1,126 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # No psycopg: the suite also proves the server works with no dependencies
+      # (the Postgres tests skip; the postgres job below runs them).
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  # The check whose absence caused #119: in a fresh venv with nothing else in
+  # it, `pip install .` must succeed from this tree alone and the server must
+  # start. Runs from outside the checkout so nothing is imported from it.
+  clean-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: pip install . into a fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install .
+          "$RUNNER_TEMP/venv/bin/pip" list
+
+      - name: The server starts over stdio
+        working-directory: ${{ runner.temp }}
+        env:
+          NUVEL_FEEDBACK_DIR: ${{ runner.temp }}/feedback
+        run: |
+          venv/bin/nuvel-mcp --help
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | timeout 30 venv/bin/nuvel-mcp serve > out.jsonl
+          grep -q '"serverInfo"' out.jsonl
+          grep -q '"record_feedback"' out.jsonl
+
+      - name: The server starts over HTTP
+        working-directory: ${{ runner.temp }}
+        env:
+          NUVEL_FEEDBACK_DIR: ${{ runner.temp }}/feedback
+          NUVEL_MCP_OAUTH_STORE: ${{ runner.temp }}/oauth.json
+        run: |
+          venv/bin/nuvel-mcp serve --transport http --no-auth --port 8765 &
+          server=$!
+          for _ in $(seq 30); do
+            curl -fsS http://127.0.0.1:8765/healthz && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8765/healthz
+          kill "$server"
+
+  # The Postgres stores, against a real server.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: nuvel
+          POSTGRES_DB: nuvel_test
+          # Throwaway CI container: no password, so none is written down here.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nuvel" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      NUVEL_MCP_TEST_DATABASE_URL: postgresql://nuvel@localhost:5432/nuvel_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[postgres,test]"
+
+      - name: Run tests on Postgres
+        run: python -m pytest tests/ -q
+
+      - name: Run the OAuth suites on the Postgres OAuth store
+        env:
+          NUVEL_MCP_TEST_OAUTH_STORE: postgres
+        run: python -m pytest tests/ -q

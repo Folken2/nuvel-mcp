@@ -25,6 +25,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections import OrderedDict
 from datetime import date, datetime, timezone
 from functools import lru_cache
@@ -294,17 +295,25 @@ class _DayIndex:
     that is unique in the file). When the file was touched since (new ctime),
     the offset is trusted only if the file grew -- an append -- and that line
     still ends at the offset; otherwise the index is rebuilt.
+
+    An unchanged ctime proves nothing about writes in the same timestamp tick
+    (1 ms to 2 s, depending on the filesystem): ``settled`` records whether the
+    snapshot was taken at least ``SETTLE_NS`` after the file's ctime, so that
+    any later write must change it. An unsettled snapshot is re-checked like a
+    touched file.
     """
 
-    __slots__ = ("dev", "inode", "ctime_ns", "size", "offset", "tail", "keys")
+    __slots__ = ("dev", "inode", "ctime_ns", "size", "settled", "offset", "tail", "keys")
 
     TAIL_BYTES = 64 * 1024  # a longer last line is compared by its last 64 KiB
+    SETTLE_NS = 2_000_000_000  # coarser than any filesystem's ctime granularity
 
     def __init__(self, stat: os.stat_result | None = None):
         self.dev = stat.st_dev if stat else -1
         self.inode = stat.st_ino if stat else -1
         self.ctime_ns = stat.st_ctime_ns if stat else -1
         self.size = stat.st_size if stat else -1
+        self.settled = False
         self.offset = 0
         self.tail = b""
         self.keys: set[tuple[object, object]] = set()
@@ -313,7 +322,7 @@ class _DayIndex:
         """True when *path* is the file this index read, unchanged up to ``offset``."""
         if (self.dev, self.inode) != (stat.st_dev, stat.st_ino) or stat.st_size < self.offset:
             return False  # replaced (rename, other device) or truncated
-        if stat.st_ctime_ns == self.ctime_ns:
+        if self.settled and (stat.st_ctime_ns, stat.st_size) == (self.ctime_ns, self.size):
             return True  # untouched since the last read
         # Touched: appended to (fine) or rewritten in place (not). An append
         # grows the file and leaves the line the offset follows in place.
@@ -346,6 +355,7 @@ class DayFileIndex:
         """Bring *path*'s index up to date with the file. Caller holds its lock."""
         with self._index_guard:
             entry = self._index.pop(path, None)
+        now_ns = time.time_ns()  # before the stat, so it never overstates settling
         try:
             stat = path.stat()
         except FileNotFoundError:
@@ -356,6 +366,7 @@ class DayFileIndex:
             # Taken before the read: a write racing it changes ctime again, so
             # the next call re-checks rather than trusting a stale snapshot.
             entry.ctime_ns, entry.size = stat.st_ctime_ns, stat.st_size
+            entry.settled = now_ns - stat.st_ctime_ns >= _DayIndex.SETTLE_NS
             if stat.st_size > entry.offset:
                 records, consumed = _read_complete_lines(path, entry.offset)
                 if consumed:
@@ -393,8 +404,9 @@ class LocalTraceStore(DayFileIndex):
     past that offset, so lines written by another process (or another store
     instance) are picked up before the check. The index is rebuilt from the
     start if the file shrank, was replaced (different device or inode), or was
-    touched (new ctime) and the bytes just before the offset changed -- a
-    rewrite in place. At most ``MAX_INDEXED_FILES`` day files are indexed
+    touched (new ctime, or a ctime too recent to rule out a write in the same
+    timestamp tick) and did not grow with the bytes just before the offset
+    intact -- a rewrite in place. At most ``MAX_INDEXED_FILES`` day files are indexed
     per store; the least recently used is dropped and rebuilt lazily from disk.
     """
 
