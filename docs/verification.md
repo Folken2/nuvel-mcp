@@ -58,10 +58,27 @@ $ curl -fsS http://127.0.0.1:8765/healthz
 
 ## CI: `.github/workflows/tests.yml`
 
-The workflow runs on pushes to `main` and on pull requests against `main`. It
-had not run on GitHub when this was recorded: the branch had not been pushed
-and no pull request had been opened. Each job's steps were therefore replayed
-locally, each in a fresh clone and venv:
+The workflow runs on pushes to `main` and on pull requests against `main`.
+
+### GitHub Actions run
+
+[Tests #2, run 41895745811](https://github.com/Folken2/nuvel-mcp/actions/runs/41895745811),
+triggered by pull request [#2](https://github.com/Folken2/nuvel-mcp/pull/2) on
+commit `ad4fb47`, from a clean checkout on `ubuntu-latest`. Every job passed:
+
+| Job | Interpreter | Result |
+| --- | --- | --- |
+| `test (3.11)` | CPython 3.11.17 | 1573 passed, 46 skipped, 2 xfailed |
+| `test (3.12)` | CPython 3.12.16 | 1573 passed, 46 skipped, 2 xfailed |
+| `test (3.13)` | CPython 3.13.17 | 1573 passed, 46 skipped, 2 xfailed |
+| `clean-install` | CPython 3.12.15 | `pip install .` installed only `nuvel-mcp-0.5.0.dev0`; stdio and HTTP startup checks passed, `/healthz` returned `{"status": "ok", "transport": "http", "storage": "files", "skills": 0, "themes": 0, "tools": 4}` |
+| `postgres`: suite | CPython 3.12.15, PostgreSQL 17.11 | 1616 passed, 3 skipped, 2 xfailed |
+| `postgres`: `NUVEL_MCP_TEST_OAUTH_STORE=postgres` | CPython 3.12.15, PostgreSQL 17.11 | 1601 passed, 18 skipped, 2 xfailed |
+
+### Local replay
+
+Before the branch was pushed, each job's steps were replayed locally, each in a
+fresh clone and venv:
 
 | Job | Interpreter | Result |
 | --- | --- | --- |
@@ -72,9 +89,9 @@ locally, each in a fresh clone and venv:
 | `postgres`: suite | 3.12.3, PostgreSQL 16.15 (UTF8) | 1616 passed, 3 skipped, 2 xfailed |
 | `postgres`: `NUVEL_MCP_TEST_OAUTH_STORE=postgres` | 3.12.3, PostgreSQL 16.15 (UTF8) | 1601 passed, 18 skipped, 2 xfailed |
 
-The local Postgres was 16, not CI's 17. The database must be UTF8, which is the
-`postgres` image default: on a `SQL_ASCII` cluster psycopg returns text as
-`bytes` and 16 tests fail.
+The local Postgres was 16; the GitHub run above used CI's 17. The database must
+be UTF8, which is the `postgres` image default: on a `SQL_ASCII` cluster psycopg
+returns text as `bytes` and 16 tests fail.
 
 Under concurrent load the first `test` replay hit a flake,
 `test_mcp_http.py::test_rejected_second_stream_releases_its_connection_slot`
@@ -82,5 +99,5 @@ Under concurrent load the first `test` replay hit a flake,
 a connection slot in the handler thread *after* writing the reply, so the
 client could send its next request first. The test now waits for the slot,
 bounded by its timeout, before each request. It passed 300 of 300 isolated runs
-and still fails if the slot release is removed. The table above was recorded
+and still fails if the slot release is removed. Both tables above were recorded
 after that fix.
