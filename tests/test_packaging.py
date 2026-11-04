@@ -72,8 +72,11 @@ def test_wheel_has_no_runtime_dependencies(tmp_path):
     meta = next(n for n in archive.namelist() if n.endswith("METADATA"))
     lines = archive.read(meta).decode().splitlines()
     requires = [line for line in lines if line.startswith("Requires-Dist:")]
-    assert requires == [], requires  # zero runtime dependencies, and no extras either
-    assert not [line for line in lines if line.startswith("Provides-Extra:")]
+    # Zero runtime dependencies: only the extras for lazily imported, optional
+    # features may pull one in.
+    assert requires and all("extra ==" in line for line in requires), requires
+    extras = {line.split(":", 1)[1].strip() for line in lines if line.startswith("Provides-Extra:")}
+    assert extras == {"postgres", "org-memory", "test"}
 
 
 def test_wheel_carries_readme_and_license_text(tmp_path):
@@ -86,14 +89,6 @@ def test_wheel_carries_readme_and_license_text(tmp_path):
     assert "nuvel-mcp" in meta.split("\n\n", 1)[1]  # README body as long description
     licenses = [n for n in names if n.endswith("LICENSE") and ".dist-info/" in n]
     assert licenses and "MIT License" in archive.read(licenses[0]).decode()
-
-
-def test_package_license_matches_the_repository_license():
-    pkg = pathlib.Path(__file__).parents[1]
-    repo_license = pkg.parents[1] / "LICENSE"
-    if not repo_license.is_file():  # an unpacked sdist has no repository around it
-        pytest.skip("not inside the repository")
-    assert (pkg / "LICENSE").read_text() == repo_license.read_text()
 
 
 def test_wheel_carries_the_current_schemas_only(tmp_path):

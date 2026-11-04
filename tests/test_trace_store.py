@@ -198,7 +198,14 @@ def _line(trace):
     return json.dumps(trace, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
-def test_index_rebuilds_when_the_file_is_rewritten_in_place_larger(tmp_path, example):
+def _in_same_tick(store, path, same_tick):
+    """Make the rewrite land in the index snapshot's ctime tick, as a coarse clock can."""
+    if same_tick:
+        store._index[path.resolve()].ctime_ns = path.stat().st_ctime_ns
+
+
+@pytest.mark.parametrize("same_tick", [False, True])
+def test_index_rebuilds_when_the_file_is_rewritten_in_place_larger(tmp_path, example, same_tick):
     store = LocalTraceStore(tmp_path)
     first, second, later = (_with_id(example, c * 36) for c in "abc")
     store.append(first)
@@ -209,10 +216,12 @@ def test_index_rebuilds_when_the_file_is_rewritten_in_place_larger(tmp_path, exa
     with path.open("r+", encoding="utf-8") as fh:
         fh.write(_line(later) + _line(first) + _line(second))
     assert path.stat().st_ino == inode
+    _in_same_tick(store, path, same_tick)
     assert store.append(later) is False
 
 
-def test_index_rebuilds_when_the_file_is_rewritten_in_place_same_size(tmp_path, example):
+@pytest.mark.parametrize("same_tick", [False, True])
+def test_index_rebuilds_when_the_file_is_rewritten_in_place_same_size(tmp_path, example, same_tick):
     store = LocalTraceStore(tmp_path)
     first, second, other = (_with_id(example, c * 36) for c in "abc")
     store.append(first)
@@ -222,6 +231,7 @@ def test_index_rebuilds_when_the_file_is_rewritten_in_place_same_size(tmp_path, 
     size, inode = path.stat().st_size, path.stat().st_ino
     path.write_text(_line(other) + _line(second), encoding="utf-8")
     assert (path.stat().st_size, path.stat().st_ino) == (size, inode)
+    _in_same_tick(store, path, same_tick)
     assert store.append(other) is False
     assert store.append(first) is True
 
