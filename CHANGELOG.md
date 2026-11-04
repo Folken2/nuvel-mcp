@@ -5,13 +5,14 @@ All notable changes to `nuvel-mcp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-`nuvel-mcp` has not been published yet: the version in `pyproject.toml` is
-`0.5.0.dev0`, and 0.5.0 will be its first release. Until 0.4.0 the server
-shipped inside `nuvel-cli` as `nuvel.mcp`; that history is in the
+0.5.0 is the first release of `nuvel-mcp` as its own package. Until 0.4.0
+the server shipped inside `nuvel-cli` as `nuvel.mcp`; that history is in the
 [`nuvel` changelog](https://github.com/Folken2/nuvel/blob/main/CHANGELOG.md).
 From here on the package is versioned and released on its own.
 
 ## [Unreleased]
+
+## [0.5.0] - 2026-11-04
 
 ### Added
 
@@ -52,3 +53,6 @@ From here on the package is versioned and released on its own.
   duplicate or reject a new run. A snapshot is now trusted on ctime only once
   it is older than any filesystem's timestamp granularity, and the size
   must match as well.
+
+[Unreleased]: https://github.com/Folken2/nuvel-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Folken2/nuvel-mcp/releases/tag/v0.5.0

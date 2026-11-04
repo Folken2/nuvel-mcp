@@ -184,6 +184,24 @@ skipped. CI (`.github/workflows/tests.yml`) runs the suite on Python 3.11–3.13
 a clean-install smoke test and the Postgres suites. The recorded clean-install
 and CI results are in [docs/verification.md](docs/verification.md).
 
+## Releasing
+
+`nuvel-mcp` is not on PyPI yet, so a git tag is the release: `nuvel` pins
+`nuvel-mcp @ git+https://github.com/Folken2/nuvel-mcp@vX.Y.Z`.
+
+1. Set `version = "X.Y.Z"` in `pyproject.toml` (no `.devN` suffix).
+2. In `CHANGELOG.md`, rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, add a
+   new empty `[Unreleased]` section above it and update the links at the end.
+3. Merge to `main`, then tag the merged commit and push the tag:
+
+   ```bash
+   git tag -a vX.Y.Z -m "nuvel-mcp X.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+The tag must point at a commit whose `pyproject.toml` declares `X.Y.Z`;
+otherwise the installed distribution reports a different version.
+
 ## License
 
 MIT; see [LICENSE](LICENSE).
