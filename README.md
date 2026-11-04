@@ -181,7 +181,8 @@ python -m venv .venv
 The Postgres tests run when `NUVEL_MCP_TEST_DATABASE_URL` points at a
 throwaway database (and the `postgres` extra is installed); otherwise they are
 skipped. CI (`.github/workflows/tests.yml`) runs the suite on Python 3.11–3.13,
-a clean-install smoke test and the Postgres suites.
+a clean-install smoke test and the Postgres suites. The recorded clean-install
+and CI results are in [docs/verification.md](docs/verification.md).
 
 ## License
 

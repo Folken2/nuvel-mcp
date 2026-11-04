@@ -245,6 +245,14 @@ def test_one_get_stream_per_session(client):
     assert client.post(_call("list_themes", {}), session)[0] == 200
 
 
+def _wait_for_a_free_slot(httpd):
+    # A handler thread frees its slot only after writing its reply, so the
+    # client can read the reply first. A leaked slot times out here instead.
+    deadline = time.monotonic() + TIMEOUT
+    while httpd._slots._value < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
 def test_rejected_second_stream_releases_its_connection_slot(server_factory):
     client = server_factory(max_connections=2)
     session = client.initialize()
@@ -252,9 +260,11 @@ def test_rejected_second_stream_releases_its_connection_slot(server_factory):
     try:
         read_frame(resp)  # stream open — holds one of the two slots
         for _ in range(5):  # each refusal must free its slot, or the cap fills
+            _wait_for_a_free_slot(client.httpd)
             second, resp2 = client.open_stream("/mcp", {"Mcp-Session-Id": session})
             assert resp2.status == 409
             second.close()
+        _wait_for_a_free_slot(client.httpd)
         assert client.post(_call("list_themes", {}), session)[0] == 200
     finally:
         first.close()
