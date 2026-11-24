@@ -89,7 +89,9 @@ def add_serve_arguments(parser: argparse.ArgumentParser) -> None:
              "($NUVEL_MCP_DATABASE_URL), 'local' (JSONL under "
              "<feedback-dir>/_runs/) or 'module:factory', a zero-argument "
              "callable returning a TraceStore. Default: auto (postgres when "
-             "NUVEL_MCP_DATABASE_URL is set, else local).",
+             "NUVEL_MCP_DATABASE_URL is set, else local). record_ui_event "
+             "follows it: postgres with postgres, else JSONL under "
+             "<feedback-dir>/_ui_events/.",
     )
     parser.add_argument(
         "--recipe-store",
@@ -312,7 +314,8 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
     usage = None
     if db is not None:
         from nuvel_mcp.db.stores import (
-            PostgresRecipeStore, PostgresTraceStore, PostgresUsageStore)
+            PostgresRecipeStore, PostgresTraceStore, PostgresUiEventStore,
+            PostgresUsageStore)
         from nuvel_mcp.usage import UsageRecorder
 
         cleanup.callback(db.close)
@@ -320,7 +323,7 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
             usage = UsageRecorder(PostgresUsageStore(db))
             cleanup.callback(usage.close)  # LIFO: flushed before the pool closes
     else:
-        PostgresRecipeStore = PostgresTraceStore = None
+        PostgresRecipeStore = PostgresTraceStore = PostgresUiEventStore = None
     country_lookup, error = _country_lookup(usage)
     if error:
         print(f"Error: {error}", file=sys.stderr)
@@ -333,6 +336,10 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
     except ValueError as exc:
         print(f"Error: invalid --trace-store: {exc}", file=sys.stderr)
         return 1
+    # UI events share the trace store's backend; a custom trace store keeps
+    # them in local files.
+    ui_event_store = (PostgresUiEventStore(db) if PostgresTraceStore is not None
+                      and isinstance(trace_store, PostgresTraceStore) else None)
     try:
         recipe_store = _select_store("recipe", args.recipe_store, db, load_recipe_store,
                                      feedback_dir, PostgresRecipeStore)
@@ -354,6 +361,7 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
         tools=args.tools,
         trace_store=trace_store,
         recipe_store=recipe_store,
+        ui_event_store=ui_event_store,
         usage=usage,
         database=db,
     )

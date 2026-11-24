@@ -1,0 +1,12 @@
+{
+  "schema": "nuvel.ui_event/1",
+  "run_id": "5d2b8c1e-4f7a-4b3d-9e60-1a8c3f7d2e94",
+  "install_id": "7b1e5d42-0a9f-4e3b-8c16-5f2a7d9e4b80",
+  "plugin": {"name": "chief-of-staff", "version": "0.4.0"},
+  "surface": "dashboard",
+  "host": "claude-chat",
+  "started_at": "2026-11-20T08:15:42Z",
+  "duration_s": 312,
+  "first_action_s": 9,
+  "events": {"view.today": 3, "task.close": 1, "draft.save_edited": 1}
+}

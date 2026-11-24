@@ -14,9 +14,11 @@ import json
 from pathlib import Path
 
 from nuvel_mcp.db import Database
-from nuvel_mcp.db.stores import OAUTH_TABLES, PostgresRecipeStore, PostgresTraceStore
+from nuvel_mcp.db.stores import (
+    OAUTH_TABLES, PostgresRecipeStore, PostgresTraceStore, PostgresUiEventStore)
 from nuvel_mcp.recipes import RECIPES_DIRNAME
 from nuvel_mcp.traces import RUNS_DIRNAME
+from nuvel_mcp.ui_events import UI_EVENTS_DIRNAME
 
 
 def _jsonl(path: Path):
@@ -98,7 +100,7 @@ def import_files(db: Database, *, oauth_store: Path | None, feedback_dir: Path,
     *force_oauth* merges the file's OAuth rows in anyway (rows whose id is
     already present are left alone; deleted ones come back)."""
     counts = {table: 0 for table in (*OAUTH_TABLES.values(), "skill_runs",
-                                      "recipe_signals", "recipes")}
+                                      "ui_events", "recipe_signals", "recipes")}
     counts["skipped"] = 0
     oauth_imported = True
     if oauth_store is not None and oauth_store.is_file():
@@ -107,6 +109,10 @@ def import_files(db: Database, *, oauth_store: Path | None, feedback_dir: Path,
     traces = PostgresTraceStore(db)
     for path in sorted((feedback_dir / RUNS_DIRNAME).glob("*/*.jsonl")):
         _append_all(_jsonl(path), traces.append, counts, "skill_runs")
+
+    ui = PostgresUiEventStore(db)
+    for path in sorted((feedback_dir / UI_EVENTS_DIRNAME).glob("*/*.jsonl")):
+        _append_all(_jsonl(path), ui.append, counts, "ui_events")
 
     recipes = PostgresRecipeStore(db)
     base = feedback_dir / RECIPES_DIRNAME

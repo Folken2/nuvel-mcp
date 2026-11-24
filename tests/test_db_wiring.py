@@ -20,7 +20,8 @@ from nuvel_mcp.recipes import LocalRecipeStore
 from nuvel_mcp.server import SkillsMCPServer
 from nuvel_mcp.skills_loader import SkillsLoader
 from nuvel_mcp.traces import LocalTraceStore
-from test_db import _recipe, _signal, _trace
+from nuvel_mcp.ui_events import LocalUiEventStore
+from test_db import _recipe, _signal, _trace, _ui_event
 
 
 @pytest.fixture(autouse=True)
@@ -200,7 +201,8 @@ def test_db_migrate_and_status(db_env, capsys):
 
 
 def test_serve_picks_postgres_for_everything(db_env, monkeypatch, capsys, tmp_path):
-    from nuvel_mcp.db.stores import PostgresOAuthStore, PostgresRecipeStore, PostgresTraceStore
+    from nuvel_mcp.db.stores import (
+        PostgresOAuthStore, PostgresRecipeStore, PostgresTraceStore, PostgresUiEventStore)
 
     seen = {}
 
@@ -212,6 +214,7 @@ def test_serve_picks_postgres_for_everything(db_env, monkeypatch, capsys, tmp_pa
     assert cli_main(["serve", "--transport", "http", "--port", "0"]) == 0
     server = seen["server"]
     assert isinstance(server.trace_store, PostgresTraceStore)
+    assert isinstance(server.ui_event_store, PostgresUiEventStore)
     assert isinstance(server.recipe_store, PostgresRecipeStore)
     assert isinstance(seen["provider"].store, PostgresOAuthStore)
     assert server.usage is not None and server.database is not None
@@ -229,6 +232,7 @@ def test_serve_respects_local_and_usage_off(db_env, monkeypatch, capsys):
     monkeypatch.setenv("NUVEL_MCP_USAGE", "0")
     assert cli_main(["serve", "--trace-store", "local"]) == 0
     assert seen["server"].trace_store is None and seen["server"].usage is None
+    assert seen["server"].ui_event_store is None  # follows the trace store
     assert "usage recording off" in capsys.readouterr().err
 
 
@@ -253,8 +257,10 @@ def test_import_copies_the_file_stores_once(db_env, capsys, tmp_path):
     record, key = file_provider.create_client("beta-tester", url_key=True)
     feedback = tmp_path / "legacy-feedback"
     traces, recipes = LocalTraceStore(feedback), LocalRecipeStore(feedback)
+    ui = LocalUiEventStore(feedback)
     for tenant in (None, record["client_id"]):
         traces.append(_trace(tenant=tenant))
+        ui.append(_ui_event(tenant=tenant))
         recipes.append_signal(_signal(tenant=tenant))
         recipes.put_recipe(_recipe(tenant=tenant))
     runs = next((feedback / "_runs").glob("*/*.jsonl"))
@@ -266,6 +272,7 @@ def test_import_copies_the_file_stores_once(db_env, capsys, tmp_path):
     assert "skill_runs" in out and "1 unreadable record(s) skipped" in out
     assert _count(db_env, "skill_runs") == 2 and _count(db_env, "recipe_signals") == 2
     assert _count(db_env, "recipes") == 2 and _count(db_env, "oauth_url_keys") == 1
+    assert _count(db_env, "ui_events") == 2
 
     assert cli_main(args) == 0  # idempotent
     captured = capsys.readouterr()

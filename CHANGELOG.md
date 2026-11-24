@@ -12,6 +12,22 @@ From here on the package is versioned and released on its own.
 
 ## [Unreleased]
 
+### Added
+
+- `record_ui_event`: records one content-free `nuvel.ui_event/1` page visit on
+  a plugin surface (today only `dashboard`), with which catalogued events
+  happened and how often (at most 50 identifier keys, counts 0 to 10000), the
+  visit's duration and the optional time to first action. Closed schema,
+  rejections return field paths only, the server stamps `tenant`, and
+  re-sending a `run_id` returns `duplicate`. On by default over HTTP.
+- `check_skill_health` with `plugin` and a surface as `skill_name`
+  (`"dashboard"`) adds a `ui` block: page visits in the last 30 days and the
+  summed event counts, scoped to the caller's tenant.
+- Storage follows the trace store: Postgres table `ui_events` (migration
+  `0004_ui_events`, row-level security forced), else JSONL under
+  `<feedback-dir>/_ui_events/`. `db import` copies those files in, and the relay
+  sends them as `{"type": "ui_event"}`.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added
