@@ -1,6 +1,7 @@
 """Postgres implementations of the server's stores.
 
 - :class:`PostgresTraceStore` — :class:`nuvel_mcp.traces.TraceStore`
+- :class:`PostgresUiEventStore` — :class:`nuvel_mcp.ui_events.UiEventStore`
 - :class:`PostgresRecipeStore` — :class:`nuvel_mcp.recipes.RecipeStore`
 - :class:`PostgresOAuthStore` — the ``reading()`` / ``transaction()`` contract of
   :class:`nuvel_mcp.oauth.OAuthStore`, so :class:`~nuvel_mcp.oauth.OAuthProvider`
@@ -75,6 +76,48 @@ class PostgresTraceStore:
         sql = (f"SELECT record FROM {self._table} "
                "WHERE plugin_name = %s AND skill_name = %s AND started_at >= %s")
         params: list = [plugin, skill, _utc(since)]
+        if tenant is not None:
+            sql += " AND tenant = %s"
+            params.append(tenant)
+        sql += " ORDER BY started_at, id"
+        with self.db.connection() as conn:
+            return [row[0] for row in conn.execute(sql, params)]
+
+
+class PostgresUiEventStore:
+    """``ui_events``: one row per page visit, unique per ``(tenant, run_id)``."""
+
+    def __init__(self, db: Database):
+        self.db = db
+        self._table = db.table("ui_events")
+
+    def append(self, event: dict) -> bool:
+        plugin = event["plugin"]
+        if not (traces.IDENTIFIER_RE.fullmatch(plugin["name"])
+                and traces.IDENTIFIER_RE.fullmatch(event["surface"])):
+            raise ValueError("plugin and surface names must be identifiers")
+        row = (
+            event.get("tenant"), event["run_id"], event["install_id"],
+            plugin["name"], plugin.get("version"), event["surface"], event["host"],
+            traces._parse_started_at(event["started_at"]), event["duration_s"],
+            event.get("first_action_s"), self.db.jsonb(event),
+        )
+        with self.db.connection() as conn:
+            inserted = conn.execute(
+                f"INSERT INTO {self._table} (tenant, run_id, install_id, plugin_name, "
+                "plugin_version, surface, host, started_at, duration_s, first_action_s, "
+                "record) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT DO NOTHING RETURNING id", row).fetchone()
+        return inserted is not None
+
+    def query(self, plugin: str, surface: str, since: datetime, tenant: str | None) -> list[dict]:
+        if not (isinstance(plugin, str) and isinstance(surface, str)
+                and traces.IDENTIFIER_RE.fullmatch(plugin)
+                and traces.IDENTIFIER_RE.fullmatch(surface)):
+            return []
+        sql = (f"SELECT record FROM {self._table} "
+               "WHERE plugin_name = %s AND surface = %s AND started_at >= %s")
+        params: list = [plugin, surface, _utc(since)]
         if tenant is not None:
             sql += " AND tenant = %s"
             params.append(tenant)

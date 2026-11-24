@@ -410,12 +410,21 @@ class LocalTraceStore(DayFileIndex):
     per store; the least recently used is dropped and rebuilt lazily from disk.
     """
 
+    #: Directory under ``feedback_dir``; a subclass storing another record
+    #: type (``ui_events.LocalUiEventStore``) sets its own, with ``_group``.
+    DIRNAME = RUNS_DIRNAME
+
     def __init__(self, feedback_dir: Path):
         self.feedback_dir = Path(feedback_dir)
         self._init_day_index()
 
+    @staticmethod
+    def _group(record: dict) -> object:
+        """The name a record is filed under next to its plugin: the skill."""
+        return _name(record, "skill")
+
     def _skill_dir(self, plugin: str, skill: str) -> Path:
-        return self.feedback_dir / RUNS_DIRNAME / f"{plugin}.{skill}"
+        return self.feedback_dir / self.DIRNAME / f"{plugin}.{skill}"
 
     def _record_key(self, record: dict) -> tuple[object, object] | None:
         if isinstance(record.get("run_id"), str) and isinstance(record.get("tenant"), (str, type(None))):
@@ -423,8 +432,9 @@ class LocalTraceStore(DayFileIndex):
         return None
 
     def append(self, trace: dict) -> bool:
-        plugin, skill = trace["plugin"]["name"], trace["skill"]["name"]
-        if not (IDENTIFIER_RE.fullmatch(plugin) and IDENTIFIER_RE.fullmatch(skill)):
+        plugin, skill = trace["plugin"]["name"], self._group(trace)
+        if not (isinstance(skill, str)
+                and IDENTIFIER_RE.fullmatch(plugin) and IDENTIFIER_RE.fullmatch(skill)):
             raise ValueError("plugin and skill names must be identifiers")
         day = _parse_started_at(trace["started_at"]).date().isoformat()
         path = (self._skill_dir(plugin, skill) / f"{day}.jsonl").resolve()
@@ -466,7 +476,7 @@ class LocalTraceStore(DayFileIndex):
                 if tenant is not None and trace.get("tenant") != tenant:
                     continue
                 # Dotted names can share a directory ('a.b' + 'c', 'a' + 'b.c').
-                if _name(trace, "plugin") != plugin or _name(trace, "skill") != skill:
+                if _name(trace, "plugin") != plugin or self._group(trace) != skill:
                     continue
                 try:
                     started = _parse_started_at(trace["started_at"])

@@ -21,6 +21,7 @@ Tools:
     record_feedback      Record the outcome of using a skill in the local feedback store.
     check_skill_health   Health report for a skill from the local feedback store.
     record_run_trace     Record one content-free ``nuvel.skill_run/1`` run trace.
+    record_ui_event      Record one content-free ``nuvel.ui_event/1`` page visit.
     record_recipe_signal Record one content-free ``nuvel.recipe_signal/2`` weekly snapshot.
     share_recipe         Share one ``nuvel.recipe/3`` recipe; its optional free text is
                          masked server-side before it is stored, relayed or logged.
@@ -45,7 +46,7 @@ from importlib import metadata, resources
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
-from nuvel_mcp import feedback, masking, recipes, traces
+from nuvel_mcp import feedback, masking, recipes, traces, ui_events
 from nuvel_mcp import usage as usage_mod
 from nuvel_mcp.auth import current_principal
 from nuvel_mcp.installer import install_skill
@@ -55,6 +56,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from nuvel_mcp.db import Database
     from nuvel_mcp.recipes import RecipeStore
     from nuvel_mcp.traces import TraceStore
+    from nuvel_mcp.ui_events import UiEventStore
     from nuvel_mcp.usage import UsageRecorder
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -122,16 +124,17 @@ HUB_TOOLS = frozenset({
 })
 FEEDBACK_TOOLS = frozenset({
     "record_feedback", "check_skill_health", "propose_improvement", "record_run_trace",
-    "record_recipe_signal", "share_recipe",
+    "record_ui_event", "record_recipe_signal", "share_recipe",
 })
 # Tools the HTTP transport exposes when no explicit allow-list (--tools) is
-# given: the hub read tools, run traces and their health summary, and the two
-# recipe tools (closed-schema signals and server-masked recipes).
+# given: the hub read tools, run traces and UI events and their health
+# summary, and the two recipe tools (closed-schema signals and server-masked recipes).
 # Off unless named: record_feedback / propose_improvement (free-text input) and
 # install_skill (writes to the server's filesystem).
 HTTP_DEFAULT_TOOLS = frozenset({
     "search_skills", "list_skills", "list_themes", "get_skill", "fence_value",
-    "record_run_trace", "check_skill_health", "record_recipe_signal", "share_recipe",
+    "record_run_trace", "record_ui_event", "check_skill_health", "record_recipe_signal",
+    "share_recipe",
 })
 RUN_OUTCOMES = ("success", "partial", "failure", "blocked", "skipped")
 
@@ -514,6 +517,7 @@ class SkillsMCPServer:
         trace_store: "TraceStore | None" = None,
         health_runs_only: bool = False,
         recipe_store: "RecipeStore | None" = None,
+        ui_event_store: "UiEventStore | None" = None,
         usage: "UsageRecorder | None" = None,
         database: "Database | None" = None,
     ):
@@ -534,10 +538,11 @@ class SkillsMCPServer:
         self._allowed_tools = tools
         self.trace_store = trace_store
         self.recipe_store = recipe_store
+        self.ui_event_store = ui_event_store
         # Remote mode, set by the HTTP transport: no tool returns anything
         # read from the local feedback store (which holds free text and every
         # tenant's outcomes). check_skill_health then requires 'plugin' and
-        # returns only the principal-scoped run-trace summary; get_skill omits
+        # returns only the principal-scoped run-trace (and UI event) summary; get_skill omits
         # 'health'.
         self.health_runs_only = health_runs_only
         # When set, discovery (resources/list, search_skills, list_skills,
@@ -585,6 +590,7 @@ class SkillsMCPServer:
             "record_feedback": self.tool_record_feedback,
             "check_skill_health": self.tool_check_skill_health,
             "record_run_trace": self.tool_record_run_trace,
+            "record_ui_event": self.tool_record_ui_event,
             "record_recipe_signal": self.tool_record_recipe_signal,
             "share_recipe": self.tool_share_recipe,
         }
@@ -599,6 +605,12 @@ class SkillsMCPServer:
         if self.trace_store is not None:
             return self.trace_store
         return traces.LocalTraceStore(self.feedback_dir)
+
+    def _ui_event_store(self) -> "UiEventStore":
+        """The configured UI event store, else a local one under ``feedback_dir``."""
+        if self.ui_event_store is not None:
+            return self.ui_event_store
+        return ui_events.LocalUiEventStore(self.feedback_dir)
 
     def _recipe_store(self) -> "RecipeStore":
         """The configured recipe store, else a local one under ``feedback_dir``."""
@@ -1029,7 +1041,10 @@ class SkillsMCPServer:
                         "same report as 'health'. With 'plugin', the report also "
                         "carries a 'runs' block built from recorded run traces: "
                         "outcome counts for the last 30 days, errors by step and "
-                        "error class, and the total."
+                        "error class, and the total. When 'skill_name' is a UI "
+                        "surface ('dashboard') and 'plugin' is given, it also "
+                        "carries a 'ui' block from recorded UI events: page "
+                        "visits in the last 30 days and the summed event counts."
                     ),
                     "inputSchema": {
                         "type": "object",
@@ -1070,6 +1085,32 @@ class SkillsMCPServer:
                         "type": "object",
                         "properties": {"trace": self._trace_input_schema()},
                         "required": ["trace"],
+                    },
+                },
+                {
+                    "name": "record_ui_event",
+                    "description": (
+                        "Record one page visit on a plugin surface (the "
+                        "dashboard) as a content-free nuvel.ui_event/1 event, "
+                        "once per visit, when the page tells you to. Every field "
+                        "is an enum, a UUID, a version, a timestamp, a count or "
+                        "a short lowercase identifier. 'events' maps event ids "
+                        "from the plugin's published event catalog (never "
+                        "invented, never built from page content) to counts. "
+                        "Never put names, subjects, addresses, message text or "
+                        "any other user content in an event. Do not send "
+                        "'tenant' (the server sets it). A rejected event returns "
+                        "the failing field paths only. Re-sending the same "
+                        "run_id returns 'duplicate'."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "event": self._doc_input_schema(
+                                ui_events.SCHEMA_RESOURCE, "One nuvel.ui_event/1 page visit object."
+                            )
+                        },
+                        "required": ["event"],
                     },
                 },
                 {
@@ -1389,7 +1430,10 @@ class SkillsMCPServer:
         except ValueError as exc:
             raise McpError(INVALID_PARAMS, str(exc))
         if plugin is not None:
-            report["runs"] = self._runs_summary(plugin, feedback.skill_key(skill_name))
+            skill = feedback.skill_key(skill_name)
+            report["runs"] = self._runs_summary(plugin, skill)
+            if skill in ui_events.surfaces():
+                report["ui"] = self._ui_summary(plugin, skill)
         return report
 
     def _runs_only_health(self, args) -> dict:
@@ -1405,7 +1449,10 @@ class SkillsMCPServer:
             skill = feedback.skill_key(skill_name if isinstance(skill_name, str) else "")
         except ValueError:
             raise McpError(INVALID_PARAMS, "Argument 'skill_name' must be a skill name") from None
-        return {"skill": skill, "plugin": plugin, "runs": self._runs_summary(plugin, skill)}
+        report = {"skill": skill, "plugin": plugin, "runs": self._runs_summary(plugin, skill)}
+        if skill in ui_events.surfaces():
+            report["ui"] = self._ui_summary(plugin, skill)
+        return report
 
     def _runs_summary(self, plugin: str, skill: str) -> dict:
         """Last-30-days run-trace summary for ``plugin.skill`` (principal-scoped)."""
@@ -1431,6 +1478,19 @@ class SkillsMCPServer:
             "errors_by_step": errors_by_step,
             "total": len(runs),
         }
+
+    def _ui_summary(self, plugin: str, surface: str) -> dict:
+        """Last-30-days UI event summary for ``plugin.surface`` (principal-scoped)."""
+        since = datetime.now(timezone.utc) - timedelta(days=30)
+        visits = self._ui_event_store().query(plugin, surface, since, current_principal.get())
+        events: dict[str, int] = {}
+        for visit in visits:
+            # Custom stores may hand back anything; count only well-formed pairs.
+            counts = visit.get("events")
+            for key, count in counts.items() if isinstance(counts, dict) else ():
+                if isinstance(key, str) and isinstance(count, int) and not isinstance(count, bool):
+                    events[key] = events.get(key, 0) + count
+        return {"last_30_days": {"visits": len(visits), "events": dict(sorted(events.items()))}}
 
     def tool_record_run_trace(self, args):
         """Validate, normalise, store and (optionally) relay one run trace."""
@@ -1461,6 +1521,24 @@ class SkillsMCPServer:
                 _relay_feedback(relay_url, {"type": "skill_run", "record": record})
             except Exception as exc:  # the local copy stands; never retried
                 log(f"Run trace relay failed (kept locally): {_describe_failure(exc)}")
+        return {"status": "recorded", "run_id": record["run_id"]}
+
+    def tool_record_ui_event(self, args):
+        """Validate, normalise, store and (optionally) relay one page visit."""
+        event = args.get("event")
+        errors = ui_events.validate_ui_event(event)
+        if errors:
+            raise ToolInputError(errors)
+
+        record = traces.normalize(event, tenant=current_principal.get())
+        try:
+            stored = self._ui_event_store().append(record)
+        except OSError as exc:
+            log(f"Could not store the UI event: {exc}")  # detail stays server-side
+            raise McpError(INTERNAL_ERROR, "Could not store the UI event") from None
+        if not stored:
+            return {"status": "duplicate", "run_id": record["run_id"]}
+        self._relay_record("ui_event", record)
         return {"status": "recorded", "run_id": record["run_id"]}
 
     def tool_record_recipe_signal(self, args):

@@ -22,12 +22,19 @@ from nuvel_mcp.traces import LocalTraceStore, normalize
 from nuvel_mcp.usage import UsageRecorder
 
 FIXTURE = Path(__file__).parent / "fixtures" / "skill_run_example.json"
+UI_FIXTURE = Path(__file__).parent / "fixtures" / "ui_event_example.json"
 PLUGIN = {"name": "chief-of-staff", "version": "0.3.0"}
 URL = "postgresql://svc:s3cr3t@db.example.test:5432/app?sslmode=require"
 
 
 def _trace(tenant=None, run_id=None, started_at="2026-10-20T09:30:12Z", **changes):
     doc = json.loads(FIXTURE.read_text())
+    doc.update({"run_id": run_id or str(uuid.uuid4()), "started_at": started_at, **changes})
+    return normalize(doc, tenant=tenant)
+
+
+def _ui_event(tenant=None, run_id=None, started_at="2026-11-20T09:30:12Z", **changes):
+    doc = json.loads(UI_FIXTURE.read_text())
     doc.update({"run_id": run_id or str(uuid.uuid4()), "started_at": started_at, **changes})
     return normalize(doc, tenant=tenant)
 
@@ -293,6 +300,43 @@ def test_trace_columns_are_populated(pg_db):
                        run["duration_s"], True)
     assert row[6] == datetime(2026, 10, 20, 9, 30, tzinfo=timezone.utc)
     assert daily == (1, 1)
+
+
+# --- UI event store ---------------------------------------------------------------------
+
+
+def test_ui_event_store_dedupes_and_queries_like_local(pg_db, tmp_path):
+    from nuvel_mcp.db.stores import PostgresUiEventStore
+    from nuvel_mcp.ui_events import LocalUiEventStore
+
+    pg, local = PostgresUiEventStore(pg_db), LocalUiEventStore(tmp_path)
+    visits = [
+        _ui_event("acme", started_at="2026-11-19T08:00:00Z"),
+        _ui_event("acme", started_at="2026-11-20T09:30:00Z", first_action_s=4),
+        _ui_event("beta", started_at="2026-11-20T10:00:00Z"),
+        _ui_event(None, started_at="2026-11-21T11:00:00Z"),
+    ]
+    for v in visits:
+        assert pg.append(v) == local.append(v) is True
+    since = datetime(2026, 11, 20, 9, 0, tzinfo=timezone.utc)
+
+    def ids(rows):
+        return sorted(r["run_id"] for r in rows)
+
+    for tenant in (None, "acme", "beta", "nobody"):
+        assert ids(pg.query("chief-of-staff", "dashboard", since, tenant)) == ids(
+            local.query("chief-of-staff", "dashboard", since, tenant))
+    assert pg.append(copy.deepcopy(visits[1])) is False
+    assert pg.append(_ui_event("other", run_id=visits[1]["run_id"])) is True
+    assert pg.query("chief-of-staff", "dashboard", since, "acme") == [visits[1]]
+    assert pg.query("Bad Name", "dashboard", since, None) == []
+    with pg_db.connection() as conn:
+        row = conn.execute(
+            f"SELECT tenant, surface, host, duration_s, first_action_s, started_at "
+            f"FROM {pg_db.table('ui_events')} WHERE run_id = %s AND tenant = 'acme'",
+            (visits[1]["run_id"],)).fetchone()
+    assert row == ("acme", "dashboard", visits[1]["host"], visits[1]["duration_s"], 4,
+                   datetime(2026, 11, 20, 9, 30, tzinfo=timezone.utc))
 
 
 # --- recipe store -----------------------------------------------------------------------
