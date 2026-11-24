@@ -2,8 +2,8 @@
 
 A dependency-free [MCP](https://modelcontextprotocol.io) server that exposes a
 Nuvel skills hub (a directory of `SKILL.md` skills) to any MCP client, over
-stdio or HTTP. It also records skill feedback, content-free run traces and
-shared recipes. The server needs nothing beyond the Python standard library
+stdio or HTTP. It also records skill feedback, content-free run traces,
+content-free page visits (UI events) and shared recipes. The server needs nothing beyond the Python standard library
 (3.11+); Postgres storage is an optional extra.
 
 ## Install
@@ -89,9 +89,10 @@ per-client `connector_url` (`$NUVEL_MCP_PUBLIC_URL/mcp/k/<key>`) once; add
 key, issue a new one, hand it out, then `client delete` the old client.
 
 Over HTTP the default tools are the hub read tools plus `record_run_trace`,
-`check_skill_health`, `record_recipe_signal` and `share_recipe`; `record_feedback`, `propose_improvement` and
+`record_ui_event`, `check_skill_health`, `record_recipe_signal` and
+`share_recipe`; `record_feedback`, `propose_improvement` and
 `install_skill` are exposed only when named in `--tools`. The tenant of each
-run trace is the OAuth `client_id`.
+run trace and UI event is the OAuth `client_id`.
 
 The `Dockerfile` in this repository builds an HTTP server image for container
 platforms. The [deployment guide](https://folken2.github.io/nuvel/how-to/deploy-skills-mcp/)
@@ -100,7 +101,7 @@ covers TLS, scopes, the interactive flow and what is exposed over HTTP.
 ### Storage and usage insights
 
 State lives in files by default. Set `NUVEL_MCP_DATABASE_URL` (for example a
-Neon pooled connection string) and OAuth, run traces, recipes and a per-request
+Neon pooled connection string) and OAuth, run traces, UI events, recipes and a per-request
 usage log all go to Postgres instead; that needs the `postgres` extra, and the
 package itself stays dependency-free. The schema is migrated at startup;
 `nuvel-mcp db migrate|status|import` manage it, and `db import` copies existing
@@ -126,8 +127,8 @@ All are optional. Command-line flags, where they exist, take precedence.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `NUVEL_FEEDBACK_DIR` | `~/.nuvel/feedback` | Local feedback store (feedback, queued proposals, run traces, recipes); `--feedback-dir` overrides it. |
-| `NUVEL_FEEDBACK_URL` | unset | Relay URL that run traces, recipe signals and recipes are also sent to, and that `propose_improvement` uses when it cannot file a GitHub issue. |
+| `NUVEL_FEEDBACK_DIR` | `~/.nuvel/feedback` | Local feedback store (feedback, queued proposals, run traces, UI events, recipes); `--feedback-dir` overrides it. |
+| `NUVEL_FEEDBACK_URL` | unset | Relay URL that run traces, UI events, recipe signals and recipes are also sent to, and that `propose_improvement` uses when it cannot file a GitHub issue. |
 | `GITHUB_TOKEN` | unset | Lets `propose_improvement` file a GitHub issue. |
 | `NUVEL_SKILLS_INSTALL_DIR` | `~/.claude/skills` | Target directory for `install_skill`. |
 | `NUVEL_MCP_APP_NAME`, `NUVEL_MCP_USER_ID` | `nuvel-skills`, `default` | App name and user id for `--with-org-memory`. |
