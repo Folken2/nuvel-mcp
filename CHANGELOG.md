@@ -12,6 +12,8 @@ From here on the package is versioned and released on its own.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-24
+
 ### Added
 
 - `record_ui_event`: records one content-free `nuvel.ui_event/1` page visit on
@@ -70,5 +72,6 @@ From here on the package is versioned and released on its own.
   it is older than any filesystem's timestamp granularity, and the size
   must match as well.
 
-[Unreleased]: https://github.com/Folken2/nuvel-mcp/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Folken2/nuvel-mcp/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Folken2/nuvel-mcp/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Folken2/nuvel-mcp/releases/tag/v0.5.0
