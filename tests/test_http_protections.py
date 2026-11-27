@@ -47,6 +47,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).parent / "fixtures" / "skill_run_example.json"
 FREE_TEXT = "zz-free-text-from-the-feedback-store-zz"
 PHASE5_TOOLS = {"search_skills", "list_skills", "list_themes", "get_skill", "fence_value",
+                "browse_skills",
                 "record_run_trace", "record_ui_event", "check_skill_health",
                 "record_recipe_signal", "share_recipe"}
 

@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skill browser</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --bg-2: var(--color-background-secondary, #f4f4f5);
+    --fg: var(--color-text-primary, #18181b);
+    --fg-2: var(--color-text-secondary, #52525b);
+    --line: var(--color-border-primary, #e4e4e7);
+    --ring: var(--color-ring-primary, #2563eb);
+    --danger: var(--color-text-danger, #b91c1c);
+    --radius: var(--border-radius-md, 8px);
+    --sans: var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+    --mono: var(--font-mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: var(--color-background-primary, #18181b);
+      --bg-2: var(--color-background-secondary, #27272a);
+      --fg: var(--color-text-primary, #fafafa);
+      --fg-2: var(--color-text-secondary, #a1a1aa);
+      --line: var(--color-border-primary, #3f3f46);
+      --ring: var(--color-ring-primary, #60a5fa);
+      --danger: var(--color-text-danger, #f87171);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: var(--color-background-primary, #18181b);
+    --bg-2: var(--color-background-secondary, #27272a);
+    --fg: var(--color-text-primary, #fafafa);
+    --fg-2: var(--color-text-secondary, #a1a1aa);
+    --line: var(--color-border-primary, #3f3f46);
+    --ring: var(--color-ring-primary, #60a5fa);
+    --danger: var(--color-text-danger, #f87171);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: var(--bg); color: var(--fg);
+         font: 14px/1.45 var(--sans); }
+  .search { display: flex; gap: 8px; margin-bottom: 10px; }
+  input[type="search"] { flex: 1; min-width: 0; padding: 7px 10px; font: inherit; color: var(--fg);
+         background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); }
+  input[type="search"]:focus, button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+  button { padding: 7px 12px; font: inherit; color: var(--fg); background: var(--bg-2);
+           border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { color: var(--fg-2); margin: 6px 0; min-height: 1.45em; }
+  .status.error { color: var(--danger); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li + li { border-top: 1px solid var(--line); }
+  .item { display: block; width: 100%; text-align: left; border: 0; border-radius: 0;
+          background: transparent; padding: 9px 4px; }
+  .item:hover { background: var(--bg-2); }
+  .name { font-weight: 600; }
+  .theme { color: var(--fg-2); font-size: 12px; margin-left: 6px; }
+  .desc { display: block; color: var(--fg-2); margin-top: 2px; overflow-wrap: anywhere; }
+  .bar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .bar h2 { font-size: 15px; margin: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  pre { margin: 0; padding: 10px; background: var(--bg-2); border: 1px solid var(--line);
+        border-radius: var(--radius); white-space: pre-wrap; overflow-wrap: anywhere;
+        font: 12.5px/1.5 var(--mono); max-height: 480px; overflow: auto; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<section id="list-view" aria-label="Skills">
+  <!-- No <form>: hosts sandbox views without allow-forms, which blocks submission. -->
+  <div id="search" class="search" role="search">
+    <input id="query" type="search" placeholder="Search skills" aria-label="Search skills" autocomplete="off">
+    <button id="go" type="button">Search</button>
+  </div>
+  <p id="status" class="status" role="status">Loading…</p>
+  <ul id="results"></ul>
+</section>
+<section id="skill-view" aria-label="Skill" hidden>
+  <div class="bar">
+    <button id="back" type="button">← Back</button>
+    <h2 id="skill-title"></h2>
+    <button id="use" type="button">Use this skill</button>
+  </div>
+  <p id="skill-status" class="status" role="status"></p>
+  <pre id="skill-body"></pre>
+</section>
+<script>
+(() => {
+  "use strict";
+  // MCP Apps view (io.modelcontextprotocol/ui): JSON-RPC 2.0 over postMessage
+  // with the host. Data from the server is only ever set as textContent.
+  const PROTOCOL_VERSION = "2026-01-26";
+  const host = window.parent;
+  const pending = new Map();
+  let nextId = 1;
+  let ready = false;
+  let current = null;  // the skill on screen: {theme, name}
+
+  const $ = (id) => document.getElementById(id);
+
+  function send(message) { host.postMessage(message, "*"); }
+
+  function request(method, params) {
+    const id = nextId++;
+    send({ jsonrpc: "2.0", id, method, params });
+    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+  }
+
+  function notify(method, params) { send({ jsonrpc: "2.0", method, params }); }
+
+  function respond(id, result) { send({ jsonrpc: "2.0", id, result }); }
+
+  function setStatus(el, text, isError) {
+    el.textContent = text;
+    el.classList.toggle("error", Boolean(isError));
+  }
+
+  // A tool result's data: structuredContent, else the JSON in its first text block.
+  function payload(result) {
+    if (result && result.isError) {
+      const text = result.content && result.content[0] && result.content[0].text;
+      throw new Error(text || "The tool reported an error");
+    }
+    if (result && result.structuredContent && typeof result.structuredContent === "object") {
+      return result.structuredContent;
+    }
+    const text = result && result.content && result.content[0] && result.content[0].text;
+    return text ? JSON.parse(text) : {};
+  }
+
+  async function callTool(name, args) {
+    return payload(await request("tools/call", { name, arguments: args }));
+  }
+
+  function renderList(data) {
+    const items = Array.isArray(data.skills) ? data.skills
+                : Array.isArray(data.results) ? data.results : [];
+    const list = $("results");
+    list.replaceChildren();
+    for (const skill of items) {
+      if (!skill || typeof skill.name !== "string") continue;
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "item";
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = skill.name;
+      const theme = document.createElement("span");
+      theme.className = "theme";
+      theme.textContent = typeof skill.theme === "string" ? skill.theme : "";
+      const desc = document.createElement("span");
+      desc.className = "desc";
+      desc.textContent = typeof skill.description === "string" ? skill.description : "";
+      button.append(name, theme, desc);
+      button.addEventListener("click", () => openSkill(skill.theme, skill.name));
+      li.append(button);
+      list.append(li);
+    }
+    const total = typeof data.total === "number" ? data.total : items.length;
+    setStatus($("status"), items.length === 0 ? "No skills found."
+      : items.length < total ? `Showing ${items.length} of ${total} skills.`
+      : `${items.length} skill${items.length === 1 ? "" : "s"}.`);
+    if (typeof data.query === "string") $("query").value = data.query;
+  }
+
+  async function search(query) {
+    setStatus($("status"), "Searching…");
+    try {
+      const args = query ? { query } : {};
+      renderList(await callTool("browse_skills", args));
+    } catch (err) {
+      setStatus($("status"), "Search failed: " + err.message, true);
+    }
+  }
+
+  async function openSkill(theme, name) {
+    current = { theme, name };
+    $("list-view").hidden = true;
+    $("skill-view").hidden = false;
+    $("skill-title").textContent = name;
+    $("skill-body").textContent = "";
+    setStatus($("skill-status"), "Loading…");
+    try {
+      const ref = typeof theme === "string" && theme ? theme + "/" + name : name;
+      const skill = await callTool("get_skill", { name: ref });
+      if (current === null || current.name !== name) return;  // navigated away
+      $("skill-body").textContent = typeof skill.content === "string" ? skill.content : "";
+      setStatus($("skill-status"), typeof skill.description === "string" ? skill.description : "");
+    } catch (err) {
+      setStatus($("skill-status"), "Could not load the skill: " + err.message, true);
+    }
+  }
+
+  function showList() {
+    current = null;
+    $("skill-view").hidden = true;
+    $("list-view").hidden = false;
+  }
+
+  function applyContext(context) {
+    if (!context || typeof context !== "object") return;
+    if (context.theme === "light" || context.theme === "dark") {
+      document.documentElement.dataset.theme = context.theme;
+    }
+    const vars = context.styles && context.styles.variables;
+    if (vars && typeof vars === "object") {
+      for (const [key, value] of Object.entries(vars)) {
+        if (/^--[a-z0-9-]+$/.test(key) && typeof value === "string") {
+          document.documentElement.style.setProperty(key, value);
+        }
+      }
+    }
+  }
+
+  function onHostRequest(message) {
+    if (message.method === "ui/resource-teardown" || message.method === "ping") {
+      respond(message.id, {});
+    } else {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
+    }
+  }
+
+  function onHostNotification(message) {
+    const params = message.params || {};
+    if (message.method === "ui/notifications/tool-input") {
+      if (params.arguments && typeof params.arguments.query === "string") {
+        $("query").value = params.arguments.query;
+      }
+    } else if (message.method === "ui/notifications/tool-result") {
+      try {
+        renderList(payload(params));
+      } catch (err) {
+        setStatus($("status"), "The tool failed: " + err.message, true);
+      }
+    } else if (message.method === "ui/notifications/tool-cancelled") {
+      setStatus($("status"), "Cancelled.");
+    } else if (message.method === "ui/notifications/host-context-changed") {
+      applyContext(params);
+    }
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== host) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if ("id" in message && !("method" in message)) {
+      const waiter = pending.get(message.id);
+      if (!waiter) return;
+      pending.delete(message.id);
+      if (message.error) waiter.reject(new Error(message.error.message || "Request failed"));
+      else waiter.resolve(message.result);
+    } else if ("id" in message) {
+      onHostRequest(message);
+    } else if (typeof message.method === "string") {
+      onHostNotification(message);
+    }
+  });
+
+  const submit = () => { if (ready) search($("query").value.trim()); };
+  $("go").addEventListener("click", submit);
+  $("query").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); submit(); }
+  });
+  $("back").addEventListener("click", showList);
+  $("use").addEventListener("click", () => {
+    if (!current) return;
+    request("ui/message", { role: "user", content: { type: "text",
+      text: `Use the ${current.name} skill.` } }).catch(() => {});
+  });
+
+  let lastSize = "";
+  new ResizeObserver(() => {
+    const width = Math.ceil(document.documentElement.scrollWidth);
+    const height = Math.ceil(document.documentElement.scrollHeight);
+    const size = width + "x" + height;
+    if (ready && size !== lastSize) {
+      lastSize = size;
+      notify("ui/notifications/size-changed", { width, height });
+    }
+  }).observe(document.body);
+
+  request("ui/initialize", {
+    appInfo: { name: "nuvel-skill-browser", version: "1.0.0" },
+    appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+    protocolVersion: PROTOCOL_VERSION,
+  }).then((result) => {
+    applyContext(result && result.hostContext);
+    ready = true;
+    notify("ui/notifications/initialized", {});
+    setStatus($("status"), "Waiting for results…");
+  }).catch((err) => setStatus($("status"), "The host refused the view: " + err.message, true));
+})();
+</script>
+</body>
+</html>

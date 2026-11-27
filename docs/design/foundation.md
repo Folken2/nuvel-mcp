@@ -324,10 +324,17 @@ render them, among others.
   `structuredContent` result. The view is extra, never required.
 - **Telemetry.** A view reports its visit through `record_ui_event` (app-only), which
   already exists and is content-free. A new `surface` value per view goes in the
-  `ui_event` catalogue.
-- **First view.** A skill browser: search, read and the skill's health, built on
-  `search_skills`, `get_skill` and `check_skill_health`. It uses only tools that already
-  exist over HTTP, so it tests the extension without new backend work.
+  `ui_event` catalogue. Not done for the skill browser: `nuvel.ui_event/1` describes a
+  plugin's surface (a plugin name and version, the plugin's event catalogue), and the
+  browser belongs to the server, so it needs a schema decision first.
+- **First view.** A skill browser: search and read, built on `get_skill` and one new
+  read-only tool, `browse_skills`, which opens the view and returns the same matches as
+  `structuredContent` and text. Built (`extensions/apps.py`, `apps/skill-browser.html`).
+  Health is left out: over HTTP `check_skill_health` needs a plugin and reports runs, not
+  hub skills. Views are not in `resources/list` (the extension allows that), so the list
+  stays the skills. A view must not use `<form>`: hosts sandbox views without
+  `allow-forms`, and Chromium then never fires `submit`. `tests/test_apps_view.py` runs
+  the view in Chromium through a minimal host under the default CSP.
 - **No HTML from tool results.** A view is a fixed, versioned resource. A tool never
   makes HTML out of user content.
 
