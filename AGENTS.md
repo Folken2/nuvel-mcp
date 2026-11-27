@@ -10,6 +10,8 @@ an `index.json`) over stdio or HTTP, and records skill feedback, content-free ru
 content-free UI events and shared recipes. Python 3.11+, package in `src/nuvel_mcp/`, one
 console script `nuvel-mcp` (`cli.py`). `README.md` is the user documentation: flags,
 endpoints, environment variables, storage.
+The plan for MCP 2026-07-28 and the extensions (skills, apps, tasks, plugins) is
+`docs/design/foundation.md`: read it before changing the protocol layer.
 
 `nuvel-cli` ([Folken2/nuvel](https://github.com/Folken2/nuvel)) depends on this package
 (`nuvel mcp serve` delegates here) and pins a release tag. This package never depends on
