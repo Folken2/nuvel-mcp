@@ -74,7 +74,8 @@ def make_hub(root: Path) -> Path:
             skill_dir = skills / theme / name
             skill_dir.mkdir(parents=True)
             (skill_dir / "SKILL.md").write_text(
-                f"---\nname: {name}\nversion: 1.0.0\n---\n\n{description}.\n",
+                f"---\nname: {name}\ndescription: {description}\nversion: 1.0.0\n---\n\n"
+                f"{description}.\n",
                 encoding="utf-8",
             )
             themes[theme].append({"name": name, "description": description,

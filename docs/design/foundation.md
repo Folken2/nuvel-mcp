@@ -270,12 +270,27 @@ The hub already is what the Skills extension (SEP-2640, beta) describes: a direc
   - `resources/read` serves the files.
   - `resources/directory/read` lists a directory (`inode/directory`), with
     `directoryRead: true` in discover.
-- **Limits.** The extension's limits (at most 512 files and 16 MiB per skill) are
-  checked when the hub loads. A skill over a limit is refused with its path in the
-  operator log, never served cut short. Paths are resolved inside the skill directory
-  with the same traversal guard as today.
-- **Digests** are computed when the hub loads and kept with the index. They drive the
-  cache TTL and the `resources/updated` notifications.
+- **Frontmatter.** The entry carries the frontmatter "verbatim as a JSON object", and a
+  host compares it field by field with what its own YAML parser reads, so the lossy
+  frontmatter parser the hub tools use won't do. `nuvel_mcp.frontmatter` is a strict
+  reader of the subset YAML 1.1 and 1.2 parsers agree on; a skill whose frontmatter
+  falls outside it (a bare `yes`, `0755`, a date, an anchor, a multi-line plain value)
+  is not published, and the log says which line. Checked against PyYAML on the
+  `SKILL.md` files of the nuvel and nuvel-plugins repositories: 47 of 49 agree exactly,
+  and the other two are refused because they are not valid YAML (a `: ` inside a plain
+  `description`).
+- **Publishing rules.** A skill is listed and answered by `skills/get` only when its
+  frontmatter is accepted, its `name` equals the index name and follows the Agent Skills
+  naming rules, it has a `description`, its theme is a valid URI authority, and it is
+  within the limits (512 files, 16 MiB). Any other skill stays readable file by file.
+  The log names each one once, with the reason.
+- **Files.** A skill's files are every regular file under its directory except names
+  starting with `.`, `__pycache__` and symbolic links; the manifest and `resources/read`
+  share that list, so they can't disagree. Bytes are served as read (no newline
+  translation), as text when they are UTF-8, else base64.
+- **Digests** are computed on demand and cached per file by modification time and size,
+  so a changed file gets a new digest on the next listing. `resources/updated`
+  notifications come with `subscriptions/listen`, in a later PR.
 - **Fallback.** Support among hosts is partial, so the hub tools stay and remain the
   default over HTTP. A client that declares the extension sees both. `get_skill` keeps
   its template variables and org-memory resolution; that is ours, not part of the

@@ -14,6 +14,27 @@ From here on the package is versioned and released on its own.
 
 ### Added
 
+- The MCP Skills extension (`io.modelcontextprotocol/skills`, with
+  `directoryRead`): `skills/list` (paginated), `skills/get` and
+  `resources/directory/read`, and every file of a skill readable at
+  `skill://<theme>/<name>/<file-path>`. Each entry carries the skill's
+  frontmatter as JSON and a manifest of its files with `sha256:` digests and
+  sizes. A skill whose frontmatter falls outside the strict YAML subset, whose
+  name differs from the index or breaks the Agent Skills rules, that has no
+  `description`, or that exceeds 512 files or 16 MiB is left out of the
+  listing, and the log says why.
+- `nuvel_mcp.frontmatter`: a strict SKILL.md frontmatter reader that refuses
+  what YAML 1.1 and 1.2 parsers read differently. The `conformance` extra adds
+  PyYAML to check it.
+
+### Changed
+
+- `resources/list` names each skill's `SKILL.md` as
+  `skill://<theme>/<name>/SKILL.md`. The earlier `skill://<theme>/<name>` still
+  reads it but is no longer listed.
+
+### Added
+
 - MCP **2026-07-28**, alongside 2024-11-05 to 2025-11-25 on the same stdio
   process and `/mcp` endpoint. A request carrying the per-request `_meta`
   envelope is served statelessly: `server/discover`, `resultType` on every
