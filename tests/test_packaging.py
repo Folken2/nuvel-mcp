@@ -76,7 +76,7 @@ def test_wheel_has_no_runtime_dependencies(tmp_path):
     # features may pull one in.
     assert requires and all("extra ==" in line for line in requires), requires
     extras = {line.split(":", 1)[1].strip() for line in lines if line.startswith("Provides-Extra:")}
-    assert extras == {"postgres", "org-memory", "test"}
+    assert extras == {"postgres", "org-memory", "test", "conformance"}
 
 
 def test_wheel_carries_readme_and_license_text(tmp_path):

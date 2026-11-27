@@ -3,7 +3,15 @@
 Serves the same :class:`~nuvel_mcp.server.SkillsMCPServer` dispatcher that the
 stdio loop uses, over two wire formats:
 
-Streamable HTTP (MCP 2025-03-26), single endpoint ``/mcp``:
+Streamable HTTP, single endpoint ``/mcp``, in two eras:
+
+MCP 2026-07-28 (stateless): a POST whose body carries the per-request
+``_meta`` envelope. No session; ``MCP-Protocol-Version``, ``Mcp-Method`` and
+(for tools/call, prompts/get, resources/read) ``Mcp-Name`` must match the body,
+else ``400`` with ``-32020``. The status follows the error code (``404`` for an
+unknown method, ``400`` for a bad envelope or version). One request per POST.
+
+MCP 2025-03-26 to 2025-11-25 (sessions):
     POST   /mcp   JSON-RPC request(s) -> application/json, or text/event-stream
                   when the client's Accept prefers it. ``initialize`` mints an
                   ``Mcp-Session-Id``; every later request must echo it.
@@ -85,6 +93,8 @@ from nuvel_mcp.oauth import (
     OAuthStoreError,
     TokenInfo,
 )
+from nuvel_mcp.protocol import envelope, headers as mcp_headers, versions
+from nuvel_mcp.protocol.errors import HEADER_MISMATCH, HTTP_STATUS, McpError
 from nuvel_mcp.server import (
     INTERNAL_ERROR,
     INVALID_REQUEST,
@@ -1107,7 +1117,7 @@ class McpRequestHandler(BaseHTTPRequestHandler):
 
     # --- dispatch -------------------------------------------------------------------
 
-    def _dispatch_all(self, messages, info: TokenInfo | None, session: Session) -> list:
+    def _dispatch_all(self, messages, info: TokenInfo | None, session: Session | None) -> list:
         """Run each message through the shared dispatcher; collect responses.
 
         The caller's tenant is ``TokenInfo.tenant``: the ``client_id`` for a
@@ -1122,7 +1132,9 @@ class McpRequestHandler(BaseHTTPRequestHandler):
         country, never its address) are set the same way for usage events.
         """
         reset = current_principal.set(info.tenant if info else None)
-        reset_client = usage.current_session_client.set(session.client_info)
+        # A modern request has no session: it names its client app itself.
+        reset_client = usage.current_session_client.set(
+            session.client_info if session is not None else {})
         reset_country = usage.current_country.set(self._country())
         try:
             return self._dispatch_each(messages)
@@ -1292,7 +1304,7 @@ class McpRequestHandler(BaseHTTPRequestHandler):
                 # Mcp-Protocol-Version / Last-Event-ID are sent by newer MCP clients.
                 "Access-Control-Allow-Headers": (
                     "Content-Type, Mcp-Session-Id, Authorization, "
-                    "Mcp-Protocol-Version, Last-Event-ID"
+                    "Mcp-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID"
                 ),
                 "Access-Control-Max-Age": str(CORS_MAX_AGE),
             })
@@ -1384,6 +1396,20 @@ class McpRequestHandler(BaseHTTPRequestHandler):
         info = self._authenticate()
         messages, is_batch = self._parse_jsonrpc(self._read_body())
         self._check_scopes(info, messages)
+        if any(envelope.is_modern(m) for m in messages):
+            if is_batch:
+                raise _Reject(HTTPStatus.BAD_REQUEST,
+                              "Invalid Request: protocol 2026-07-28 does not batch requests")
+            self._post_mcp_modern(info, messages[0])
+            return
+        version_header = self.headers.get(mcp_headers.PROTOCOL_VERSION)
+        if version_header in versions.MODERN and any(
+                isinstance(m, dict) and "id" in m for m in messages):
+            # A modern header on a request without the envelope: the two disagree.
+            raise _Reject(HTTPStatus.BAD_REQUEST,
+                          f"Header mismatch: {mcp_headers.PROTOCOL_VERSION} names a "
+                          "2026-07-28 version but the request has no _meta envelope",
+                          HEADER_MISMATCH)
         is_init = any(isinstance(m, dict) and m.get("method") == "initialize"
                       for m in messages)
         if is_init and is_batch:
@@ -1415,6 +1441,33 @@ class McpRequestHandler(BaseHTTPRequestHandler):
                        {**headers, "Cache-Control": "no-cache"})
             return
         self._send_json(HTTPStatus.OK, responses if is_batch else responses[0], headers)
+
+    def _post_mcp_modern(self, info: TokenInfo | None, message: dict) -> None:
+        """A 2026-07-28 request: no session, its headers checked against its
+        body, and the reply's status taken from its error code."""
+        msg_id = message.get("id")
+        try:
+            context = envelope.read(message)
+            mcp_headers.check(message, context.version, self.headers.get_all)
+        except McpError as exc:
+            self._send_json(HTTP_STATUS.get(exc.code, HTTPStatus.BAD_REQUEST),
+                            error_response(msg_id, exc.code, exc.message, exc.data))
+            return
+        responses = self._dispatch_all([message], info, None)
+        if not responses:
+            self._send(HTTPStatus.ACCEPTED)
+            return
+        response = responses[0]
+        error = response.get("error")
+        if error is not None:
+            self._send_json(HTTP_STATUS.get(error.get("code"), HTTPStatus.OK), response)
+            return
+        if prefers_sse(self.headers.get("Accept")):
+            self.close_connection = True
+            self._send(HTTPStatus.OK, sse_event(response), "text/event-stream",
+                       {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+            return
+        self._send_json(HTTPStatus.OK, response)
 
     def _get_mcp(self) -> None:
         info = self._authenticate()
@@ -1608,6 +1661,14 @@ def make_server(mcp: SkillsMCPServer, host: str = DEFAULT_HOST, port: int = DEFA
     elif oauth_provider is None:
         raise ValueError("the gated HTTP transport needs an OAuthProvider (or no_auth=True)")
     config = config or HttpConfig.from_env()
+    if no_auth:
+        # One local caller and nothing in between: a list may be cached by anyone.
+        mcp.cache_scope = "public"
+    if config.public_url and mcp.state_sealer.ephemeral:
+        log("Warning: NUVEL_MCP_STATE_KEY is not set: multi round-trip requests are "
+            "sealed with a per-process key, so a retry that reaches another replica, or "
+            "this one after a restart, is refused. Set it on every replica (32+ random "
+            "bytes, base64) before running more than one.")
     if config.max_sessions >= config.max_connections:
         log(f"Warning: NUVEL_MCP_MAX_SESSIONS ({config.max_sessions}) >= "
             f"NUVEL_MCP_MAX_CONNECTIONS ({config.max_connections}): every open SSE stream "

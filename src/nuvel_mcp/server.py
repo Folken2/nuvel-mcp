@@ -2,6 +2,11 @@
 
 Exposes a Nuvel Skills hub as MCP resources and tools over stdio. Stdlib only.
 
+Both protocol eras, from one dispatcher: a request carrying the 2026-07-28
+``_meta`` envelope is served statelessly (``server/discover``, ``resultType``,
+cache hints; see :mod:`nuvel_mcp.protocol`), and an ``initialize`` handshake
+negotiates a 2024-11-05 to 2025-11-25 session.
+
 Protocol channel: stdout (one JSON message per line).
 Logging channel:  stderr.
 
@@ -31,6 +36,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import dataclasses
 import hashlib
 import http.client
 import json
@@ -50,6 +56,17 @@ from nuvel_mcp import feedback, masking, recipes, traces, ui_events
 from nuvel_mcp import usage as usage_mod
 from nuvel_mcp.auth import current_principal
 from nuvel_mcp.installer import install_skill
+from nuvel_mcp.protocol import envelope, kernel, mrtr, versions
+from nuvel_mcp.protocol.errors import (  # noqa: F401 - re-exported for the transports
+    HTTP_STATUS,
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    INVALID_REQUEST,
+    METHOD_NOT_FOUND,
+    PARSE_ERROR,
+    McpError,
+    error_response,
+)
 from nuvel_mcp.skills_loader import SkillsError, SkillsLoader, parse_frontmatter
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -59,7 +76,9 @@ if TYPE_CHECKING:  # pragma: no cover
     from nuvel_mcp.ui_events import UiEventStore
     from nuvel_mcp.usage import UsageRecorder
 
-PROTOCOL_VERSION = "2024-11-05"
+# The version an initialize answer names when the client asked for one we do
+# not speak (see versions.negotiate_legacy); modern requests name their own.
+PROTOCOL_VERSION = versions.LATEST_LEGACY
 _CLIENT_KEYS = ("client_name", "client_version", "protocol_version")
 
 
@@ -87,13 +106,6 @@ SERVER_INFO = {
         "sizes": ["any"],
     }],
 }
-
-# JSON-RPC standard error codes.
-PARSE_ERROR = -32700
-INVALID_REQUEST = -32600
-METHOD_NOT_FOUND = -32601
-INVALID_PARAMS = -32602
-INTERNAL_ERROR = -32603
 
 # Skill-improvement issues are filed against the skills hub.
 GITHUB_REPO = "Folken2/skills"
@@ -145,13 +157,6 @@ class ToolInputError(Exception):
     def __init__(self, errors: list[str]):
         super().__init__("; ".join(errors))
         self.errors = list(errors)
-
-
-class McpError(Exception):
-    def __init__(self, code: int, message: str):
-        super().__init__(message)
-        self.code = code
-        self.message = message
 
 
 def _parse_skill_uri(uri: str) -> tuple[str, str]:
@@ -566,6 +571,12 @@ class SkillsMCPServer:
         # returns an error response to refuse the message, or None to let it
         # through. The HTTP transport authenticates at the HTTP layer instead.
         self.gate = None
+        # Who may cache a modern list/read result: "private" (per
+        # authorization context) unless a transport knows there is none.
+        self.cache_scope = "private"
+        # Seals requestState for multi round-trip requests (NUVEL_MCP_STATE_KEY,
+        # else a per-process key).
+        self.state_sealer = mrtr.StateSealer.from_env()
         if os.environ.get("NUVEL_FEEDBACK_QUEUE", "").strip():
             log(
                 "NUVEL_FEEDBACK_QUEUE is no longer used; queued proposals go to "
@@ -574,6 +585,7 @@ class SkillsMCPServer:
             )
         self._methods = {
             "initialize": self.handle_initialize,
+            "server/discover": self.handle_discover,
             "resources/list": self.handle_resources_list,
             "resources/read": self.handle_resources_read,
             "tools/list": self.handle_tools_list,
@@ -679,15 +691,21 @@ class SkillsMCPServer:
 
     # --- Method handlers -----------------------------------------------------
 
+    def capabilities(self) -> dict:
+        """What this server offers, the same in both eras."""
+        return {"resources": {}, "tools": {}}
+
     def handle_initialize(self, params):
+        """The legacy handshake: the session speaks the negotiated version."""
+        requested = params.get("protocolVersion") if isinstance(params, dict) else None
         return {
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {
-                "resources": {"list": True, "read": True},
-                "tools": {"list": True, "call": True},
-            },
+            "protocolVersion": versions.negotiate_legacy(requested),
+            "capabilities": self.capabilities(),
             "serverInfo": SERVER_INFO,
         }
+
+    def handle_discover(self, params):
+        return kernel.discover(self.capabilities())
 
     def enable_remote_mode(self) -> None:
         """Prepare this server to be served over HTTP (called by the transport).
@@ -749,7 +767,8 @@ class SkillsMCPServer:
         tools = self._all_tool_definitions()["tools"]
         if self.health_runs_only:
             tools = [_remote_definition(t) for t in tools]
-        return {"tools": [t for t in tools if self._tool_enabled(t["name"])]}
+        enabled = [t for t in tools if self._tool_enabled(t["name"])]
+        return {"tools": sorted(enabled, key=lambda t: t["name"])}
 
     def _all_tool_definitions(self):
         return {
@@ -1805,7 +1824,11 @@ class SkillsMCPServer:
         if method == "tools/call":
             name = params.get("name") if isinstance(params, dict) else None
             tool = name if isinstance(name, str) and name in self._tools else "unknown"
-        client = self._session_client()
+        if envelope.is_modern(message):
+            # A modern request names its client app itself; there is no session.
+            client = usage_mod.client_info_from_meta(envelope.meta_of(message))
+        else:
+            client = self._session_client()
         error = response.get("error") if isinstance(response, dict) else None
         result = response.get("result") if isinstance(response, dict) else None
         if error is not None:
@@ -1847,6 +1870,9 @@ class SkillsMCPServer:
             # e.g. notifications/initialized, $/cancelRequest — no response.
             return None
 
+        if envelope.is_modern(message):
+            return self._dispatch_modern(message, msg_id, method, is_notification)
+
         handler = self._methods.get(method)
         if handler is None:
             if is_notification:
@@ -1856,32 +1882,105 @@ class SkillsMCPServer:
 
         params = message.get("params") or {}
         try:
-            result = handler(params)
+            result = self._call(method, handler, params)
+        except McpError as exc:
+            return error_response(msg_id, exc.code, exc.message, exc.data)
+        except mrtr.InputRequired:
+            # A legacy session has no inline way to ask for input.
+            return error_response(msg_id, INVALID_REQUEST,
+                                  "This request needs input from the client, which needs "
+                                  f"protocol version {versions.LATEST_MODERN}")
+        if is_notification:
+            return None
+        return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    def _dispatch_modern(self, message, msg_id, method, is_notification):
+        """A 2026-07-28 request: its envelope, not a session, says who is asking."""
+        if is_notification:
+            return None  # the revision defines no client notification we act on
+        params = message.get("params")
+        try:
+            context = envelope.read(message)
+            envelope.require_supported(context)
+            handler = None if method in kernel.REMOVED else self._methods.get(method)
+            if handler is None:
+                raise McpError(METHOD_NOT_FOUND, "Method not found")
+            context = self._open_round(method, params, context)
+        except McpError as exc:
+            return error_response(msg_id, exc.code, exc.message, exc.data)
+        reset = envelope.current_request.set(context)
+        try:
+            result = self._call(method, handler, params)
+        except McpError as exc:
+            return error_response(msg_id, exc.code, exc.message, exc.data)
+        except mrtr.InputRequired as needed:
+            try:
+                result = self._input_required(method, params, context, needed)
+            except McpError as exc:
+                return error_response(msg_id, exc.code, exc.message, exc.data)
+        finally:
+            envelope.current_request.reset(reset)
+        result = kernel.finish(method, result, SERVER_INFO, self.cache_scope)
+        return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    def _open_round(self, method, params, context):
+        """On the retry of a multi round-trip request, verify its requestState
+        and hand the handler the client's answers."""
+        if method not in mrtr.METHODS:
+            return context
+        responses = params.get("inputResponses")
+        if responses is not None and not isinstance(responses, dict):
+            raise McpError(INVALID_PARAMS, "inputResponses must be an object")
+        state = None
+        if "requestState" in params:
+            state = self.state_sealer.open(params["requestState"],
+                                           principal=current_principal.get(),
+                                           method=method, params=params)
+        return dataclasses.replace(context, input_responses=responses or {}, state=state)
+
+    def _input_required(self, method, params, context, needed):
+        if method not in mrtr.METHODS:
+            log(f"Internal error in {method}: input requested where the protocol allows none")
+            raise McpError(INTERNAL_ERROR, "Internal error")
+        try:
+            mrtr.check_capabilities(context, needed.requests)
+            token = None
+            if needed.state is not None:
+                token = self.state_sealer.seal(principal=current_principal.get(), method=method,
+                                               params=params, state=needed.state)
+        except (TypeError, ValueError) as exc:  # an unknown input kind, a state too large
+            log(f"Internal error in {method}: input request not sent: {type(exc).__name__}")
+            raise McpError(INTERNAL_ERROR, "Internal error") from None
+        return kernel.input_required(needed.requests, token)
+
+    def _call(self, method, handler, params):
+        """Run one handler. Raises McpError (with fixed text for anything
+        unexpected) or mrtr.InputRequired; returns the result."""
+        try:
+            return handler(params)
         except McpError as exc:
             log(f"McpError in {method}: {exc.message}")
-            return error_response(msg_id, exc.code, exc.message)
+            raise
+        except mrtr.InputRequired:
+            raise
         except SkillsError as exc:
             log(f"SkillsError in {method}: {exc}")
             if self.health_runs_only:
                 # Skills errors can carry hub paths: remote callers get fixed text.
-                return error_response(msg_id, INTERNAL_ERROR, "Skills error")
-            return error_response(msg_id, INTERNAL_ERROR, f"Skills error: {exc}")
+                raise McpError(INTERNAL_ERROR, "Skills error") from None
+            raise McpError(INTERNAL_ERROR, f"Skills error: {exc}") from None
         except Exception as exc:  # noqa: BLE001 - report as JSON-RPC internal error
             if method == "tools/call" and isinstance(params, dict) and params.get("name") == "share_recipe":
                 # share_recipe carries raw client text until it is masked, and an
                 # exception's text may quote it: the type only, here and to the caller.
                 log(f"Internal error in {method} (share_recipe): {type(exc).__name__}")
-                return error_response(msg_id, INTERNAL_ERROR, "Internal error")
+                raise McpError(INTERNAL_ERROR, "Internal error") from None
             log(f"Internal error in {method}: {type(exc).__name__}: {exc}")
             if self.health_runs_only:
                 # Remote callers get no server paths or exception text; the
                 # detail stays in the operator's stderr log.
-                return error_response(msg_id, INTERNAL_ERROR, "Internal error")
-            return error_response(msg_id, INTERNAL_ERROR, f"Internal error: {exc}")
-
-        if is_notification:
-            return None
-        return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+                raise McpError(INTERNAL_ERROR, "Internal error") from None
+            raise McpError(INTERNAL_ERROR, f"Internal error: {exc}") from None
 
     def serve(self, stdin: IO[str] | None = None, stdout: IO[str] | None = None) -> None:
         """Run the stdio read/dispatch/write loop until EOF on stdin."""
@@ -1911,14 +2010,6 @@ class SkillsMCPServer:
             if response is not None:
                 _write_message(stdout, response)
         log("nuvel-skills MCP server: EOF on stdin, shutting down.")
-
-
-def error_response(msg_id, code, message):
-    return {
-        "jsonrpc": "2.0",
-        "id": msg_id,
-        "error": {"code": code, "message": message},
-    }
 
 
 def _write_message(stdout: IO[str], message) -> None:

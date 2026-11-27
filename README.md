@@ -28,6 +28,7 @@ Optional extras (`pip install ".[postgres]"` from a clone):
 | `postgres` | `psycopg[binary,pool]` | `NUVEL_MCP_DATABASE_URL` (Postgres storage) |
 | `org-memory` | `nuvel-cli` | `serve --with-org-memory` |
 | `test` | `pytest` | running the test suite |
+| `conformance` | `mcp` (the official SDK) | `tests/test_conformance_sdk.py`, which drives this server with the SDK's client; test-only |
 
 ## Run
 
@@ -53,6 +54,34 @@ Run `nuvel-mcp serve --help` for all flags (`--theme`, `--require`,
 `--recipe-store`, `--transport`, `--host`, `--port`, `--allow-remote`,
 `--no-auth`, `--require-auth`). The other subcommands are `client`, `token`,
 `db`, `clients` and `report`; `nuvel-mcp --help` lists them.
+
+### Protocol versions
+
+The server speaks MCP **2026-07-28** and, for older clients, 2024-11-05 to
+2025-11-25, on the same stdio process and the same `/mcp` endpoint:
+
+- A request that carries the 2026-07-28 envelope in `params._meta`
+  (`io.modelcontextprotocol/protocolVersion` and
+  `io.modelcontextprotocol/clientCapabilities`) is served statelessly: no
+  `initialize`, no session. `server/discover` returns the supported versions
+  and capabilities. Results carry `resultType`, the server's identity in
+  `_meta`, and on discover, list and read results `ttlMs` and `cacheScope`
+  (`private` whenever auth is on). An unsupported version gets `-32022` with
+  the supported list.
+- An `initialize` handshake opens a legacy session, answered with the
+  client's version when it is one of those, else `2025-11-25`.
+
+Over HTTP, a 2026-07-28 request must send `MCP-Protocol-Version`,
+`Mcp-Method` and, for `tools/call`, `prompts/get` and `resources/read`,
+`Mcp-Name` (plain, or `=?base64?...?=`), each matching the body; a mismatch
+gets `400` with `-32020`. An unknown method is `404`. Requests are not batched.
+
+Tools may ask the client for input mid-call (multi round-trip requests,
+`resultType: "input_required"`). The `requestState` the client echoes back is
+sealed with HMAC-SHA256 and bound to the caller, the call and a 10-minute
+expiry. Set `NUVEL_MCP_STATE_KEY` on every replica of an HTTP deployment;
+without it each process uses its own random key and a retry that reaches
+another process is refused.
 
 ### Over HTTP
 
@@ -142,6 +171,7 @@ All are optional. Command-line flags, where they exist, take precedence.
 | `NUVEL_MCP_OAUTH_STORE` | `~/.nuvel/oauth.json` | OAuth store file (without a database). |
 | `NUVEL_MCP_PUBLIC_URL` | unset | Public base URL of a remote HTTP server (OAuth resource and issuer). |
 | `NUVEL_MCP_ACCESS_TOKEN` | unset | Bearer token the stdio server checks with `--require-auth`. |
+| `NUVEL_MCP_STATE_KEY` | random per process | Key(s) sealing the `requestState` of multi round-trip requests: 32 or more random bytes, base64; comma-separate several to rotate (the first signs, any opens). Set the same value on every replica. An invalid key stops the server. |
 | `NUVEL_OAUTH_LOGIN` | GitHub login | `none` disables interactive login (operator-issued clients only). |
 | `NUVEL_OAUTH_GITHUB_CLIENT_ID`, `NUVEL_OAUTH_GITHUB_CLIENT_SECRET` | unset | GitHub OAuth app for the interactive login. |
 | `NUVEL_OAUTH_ALLOWED_USERS` | unset | Comma-separated GitHub users allowed to sign in. |
@@ -181,7 +211,9 @@ python -m venv .venv
 
 The Postgres tests run when `NUVEL_MCP_TEST_DATABASE_URL` points at a
 throwaway database (and the `postgres` extra is installed); otherwise they are
-skipped. CI (`.github/workflows/tests.yml`) runs the suite on Python 3.11–3.13,
+skipped. `pip install -e ".[test,conformance]"` adds the official MCP SDK, and
+`tests/test_conformance_sdk.py` then drives the server with its client in both
+protocol eras, over stdio and HTTP. CI (`.github/workflows/tests.yml`) runs the suite on Python 3.11–3.13,
 a clean-install smoke test and the Postgres suites. The recorded clean-install
 and CI results are in [docs/verification.md](docs/verification.md).
 

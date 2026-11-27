@@ -21,6 +21,9 @@ postgres = ["psycopg[binary,pool]>=3.2,<4"]
 # serve --with-org-memory: template resolution via nuvel.memory from nuvel-cli.
 org-memory = ["nuvel-cli>=0.4"]
 test = ["pytest>=8"]
+# tests/test_conformance_sdk.py: the official MCP SDK's client as an
+# independent check of the wire format. Test-only; the server never imports it.
+conformance = ["mcp>=2.3,<3"]
 
 [project.urls]
 Homepage = "https://github.com/Folken2/nuvel-mcp"
