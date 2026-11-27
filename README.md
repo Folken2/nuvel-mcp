@@ -83,6 +83,30 @@ expiry. Set `NUVEL_MCP_STATE_KEY` on every replica of an HTTP deployment;
 without it each process uses its own random key and a retry that reaches
 another process is refused.
 
+### Skills extension
+
+The hub is served through the MCP Skills extension
+(`io.modelcontextprotocol/skills`, declared in `server/discover` and
+`initialize` with `directoryRead: true`). Every file of a skill is a resource
+at `skill://<theme>/<name>/<file-path>` (the `SKILL.md` at
+`skill://<theme>/<name>/SKILL.md`), and:
+
+- `skills/list` (paginated) and `skills/get` (`uri` of a `SKILL.md`) return each
+  skill's entry: its frontmatter as JSON and a manifest of every file with its
+  `sha256:` digest and size.
+- `resources/directory/read` lists a directory: a skill's root or a
+  subdirectory, or `skill://<theme>` for the theme's skills.
+- `resources/read` serves any file of a skill, as text when it is UTF-8, else
+  base64. Files whose names start with `.`, `__pycache__` and symbolic links
+  are never served. `skill://<theme>/<name>` still reads the `SKILL.md`.
+
+A skill is listed only when its frontmatter is in the strict YAML subset that
+every common parser reads the same way (so a host comparing it with the file
+sees no difference), its `name` matches the index entry and the Agent Skills
+naming rules, it has a `description`, and it has at most 512 files and 16 MiB.
+The server log names any skill left out and why. The hub tools
+(`search_skills`, `get_skill`, ...) are unchanged.
+
 ### Over HTTP
 
 The HTTP transport (Streamable HTTP on `/mcp`, legacy SSE, OAuth 2.1) is part of

@@ -136,8 +136,9 @@ class TestServerMethods(unittest.TestCase):
     def test_resources_list(self):
         resp = self._call("resources/list")
         uris = {r["uri"] for r in resp["result"]["resources"]}
-        self.assertIn("skill://hr/onboarding", uris)
-        self.assertIn("skill://hr/offboarding", uris)
+        # The Skills extension's form: each skill's SKILL.md.
+        self.assertIn("skill://hr/onboarding/SKILL.md", uris)
+        self.assertIn("skill://hr/offboarding/SKILL.md", uris)
 
     def test_resources_read_strips_skills_prefix(self):
         # Regression: repo-root-relative path must not double the "skills/" prefix.

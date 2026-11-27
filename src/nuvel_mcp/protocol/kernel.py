@@ -17,6 +17,10 @@ CACHE_TTL_MS = {
     "resources/templates/list": 300_000,
     "prompts/list": 300_000,
     "resources/read": 300_000,
+    # The Skills extension's results are CacheableResults too.
+    "skills/list": 300_000,
+    "skills/get": 300_000,
+    "resources/directory/read": 300_000,
 }
 # Legacy methods the 2026-07-28 revision removed: on the modern path they are
 # unknown methods.

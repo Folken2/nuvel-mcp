@@ -23,7 +23,8 @@ org-memory = ["nuvel-cli>=0.4"]
 test = ["pytest>=8"]
 # tests/test_conformance_sdk.py: the official MCP SDK's client as an
 # independent check of the wire format. Test-only; the server never imports it.
-conformance = ["mcp>=2.3,<3"]
+# PyYAML reads SKILL.md frontmatter as YAML 1.1 hosts do (tests/test_frontmatter.py).
+conformance = ["mcp>=2.3,<3", "pyyaml>=6"]
 
 [project.urls]
 Homepage = "https://github.com/Folken2/nuvel-mcp"

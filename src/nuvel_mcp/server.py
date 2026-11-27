@@ -11,7 +11,9 @@ Protocol channel: stdout (one JSON message per line).
 Logging channel:  stderr.
 
 Resources:
-    skill://{theme}/{name}   Full SKILL.md content for a skill.
+    skill://{theme}/{name}/{file}   Any file of a skill (Skills extension, see
+                                    nuvel_mcp.extensions.skills).
+    skill://{theme}/{name}          The SKILL.md, the earlier form (not listed).
 
 Tools:
     search_skills        Ranked multi-word search over metadata (and optionally bodies).
@@ -55,6 +57,7 @@ from typing import IO, TYPE_CHECKING
 from nuvel_mcp import feedback, masking, recipes, traces, ui_events
 from nuvel_mcp import usage as usage_mod
 from nuvel_mcp.auth import current_principal
+from nuvel_mcp.extensions import skills as skills_ext
 from nuvel_mcp.installer import install_skill
 from nuvel_mcp.protocol import envelope, kernel, mrtr, versions
 from nuvel_mcp.protocol.errors import (  # noqa: F401 - re-exported for the transports
@@ -591,6 +594,14 @@ class SkillsMCPServer:
             "tools/list": self.handle_tools_list,
             "tools/call": self.handle_tools_call,
         }
+        # MCP extensions offered (see nuvel_mcp.extensions): each adds methods
+        # and an entry under capabilities.extensions.
+        self.extensions = []
+        if loader is not None:
+            self.skills = skills_ext.SkillsExtension(loader, self._scoped_entries)
+            self.extensions.append(self.skills)
+        for extension in self.extensions:
+            self._methods.update(extension.methods())
         self._tools = {
             "search_skills": self.tool_search_skills,
             "list_skills": self.tool_list_skills,
@@ -692,8 +703,12 @@ class SkillsMCPServer:
     # --- Method handlers -----------------------------------------------------
 
     def capabilities(self) -> dict:
-        """What this server offers, the same in both eras."""
-        return {"resources": {}, "tools": {}}
+        """What this server offers, the same in both eras (in initialize, the
+        extensions follow the pre-2026 convention of riding in capabilities)."""
+        capabilities: dict = {"resources": {}, "tools": {}}
+        if self.extensions:
+            capabilities["extensions"] = {e.identifier: e.settings() for e in self.extensions}
+        return capabilities
 
     def handle_initialize(self, params):
         """The legacy handshake: the session speaks the negotiated version."""
@@ -725,22 +740,18 @@ class SkillsMCPServer:
     def handle_resources_list(self, params):
         if self.loader is None:
             return {"resources": []}
-        resources = []
-        for theme, entry in self._scoped_entries():
-            name = entry["name"]
-            resources.append({
-                "uri": f"skill://{theme}/{name}",
-                "name": name,
-                "description": entry.get("description", ""),
-                "mimeType": "text/markdown",
-            })
-        return {"resources": resources}
+        return {"resources": self.skills.resource_list()}
 
     def handle_resources_read(self, params):
         uri = params.get("uri")
         if not uri:
             raise McpError(INVALID_PARAMS, "Missing required param 'uri'")
+        segments = skills_ext.parse_uri(uri)
+        if self.loader is not None and segments is not None and len(segments) >= 3:
+            # skill://<theme>/<name>/<file>: any file of the skill.
+            return self.skills.read(segments)
         try:
+            # skill://<theme>/<name>: the SKILL.md, the form before 2026-07-28.
             theme, name = _parse_skill_uri(uri)
         except ValueError as exc:
             raise McpError(INVALID_PARAMS, f"Invalid skill URI: {exc}")

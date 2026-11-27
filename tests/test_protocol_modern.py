@@ -38,7 +38,9 @@ def test_discover_names_modern_versions_capabilities_and_identity(server):
     result = server.dispatch(modern("server/discover"))["result"]
     assert result["resultType"] == "complete"
     assert result["supportedVersions"] == list(versions.MODERN)
-    assert result["capabilities"] == {"resources": {}, "tools": {}}
+    assert result["capabilities"] == {
+        "resources": {}, "tools": {},
+        "extensions": {"io.modelcontextprotocol/skills": {"directoryRead": True}}}
     assert result["_meta"][SERVER_INFO_KEY]["name"] == SERVER_INFO["name"]
     assert result["ttlMs"] > 0 and result["cacheScope"] == "private"
 
@@ -113,7 +115,7 @@ def test_initialize_negotiates_a_legacy_version(server, requested, answered):
     result = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                               "params": params})["result"]
     assert result["protocolVersion"] == answered
-    assert result["capabilities"] == {"resources": {}, "tools": {}}
+    assert result["capabilities"]["resources"] == {} and result["capabilities"]["tools"] == {}
 
 
 def test_initialize_stays_legacy_with_an_envelope_on_it(server):

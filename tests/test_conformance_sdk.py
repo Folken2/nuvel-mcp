@@ -47,7 +47,7 @@ async def _exercise(target, mode: str) -> dict:
     async with Client(target, mode=mode, read_timeout_seconds=TIMEOUT) as client:
         tools = await client.list_tools()
         resources = await client.list_resources()
-        read = await client.read_resource("skill://hr/onboarding")
+        read = await client.read_resource("skill://hr/onboarding/SKILL.md")
         call = await client.call_tool("search_skills", {"query": "rollback"})
         return {
             "version": client.protocol_version,
@@ -68,7 +68,7 @@ def _check(seen: dict, mode: str) -> None:
     if mode != "2026-07-28":
         assert seen["server"] == "nuvel-skills"
     assert "search_skills" in seen["tools"]
-    assert "skill://hr/onboarding" in seen["resources"]
+    assert "skill://hr/onboarding/SKILL.md" in seen["resources"]
     assert "onboarding" in seen["read"].lower()
     assert seen["call_error"] is False and seen["found"] == "rollback"
 
@@ -114,3 +114,30 @@ def test_sdk_client_completes_a_multi_round_trip_call(httpd):
     result = asyncio.run(run())
     assert prompts == ["Who is asking?"]
     assert json.loads(result.content[0].text) == {"hello": "Ada", "state": {"asked": True}}
+
+
+def test_sdk_reads_every_skill_file_back_to_its_manifest_digest(httpd):
+    """skills/list over raw HTTP (the SDK has no Skills client), then every
+    listed file through the SDK's resources/read, checked against the digest."""
+    import base64
+    import hashlib
+
+    from test_mcp_http_modern import post_modern
+    from test_protocol_modern import modern
+
+    status, _, body = post_modern(httpd, modern("skills/list"))
+    assert status == 200
+    resources = [r for skill in body["result"]["skills"] for r in skill["resources"]]
+    assert resources
+
+    async def read_all():
+        async with Client(httpd.url + "/mcp", mode="2026-07-28",
+                          read_timeout_seconds=TIMEOUT) as client:
+            return [await client.read_resource(r["uri"]) for r in resources]
+
+    for resource, read in zip(resources, asyncio.run(read_all())):
+        content = read.contents[0]
+        data = (content.text.encode("utf-8") if hasattr(content, "text")
+                else base64.b64decode(content.blob))
+        assert "sha256:" + hashlib.sha256(data).hexdigest() == resource["digest"]
+        assert len(data) == resource["size"]
