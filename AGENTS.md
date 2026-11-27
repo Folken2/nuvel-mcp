@@ -24,6 +24,8 @@ python -m venv .venv
 .venv/bin/pip install -e ".[test]"          # add ",postgres" for the database tests
 .venv/bin/python -m pytest tests/ -q
 .venv/bin/python -m pytest tests/test_mcp_http.py -q   # one file
+.venv/bin/pip install -e ".[test,conformance]"        # the official SDK as a test oracle
+.venv/bin/python -m pytest tests/test_conformance_sdk.py -q
 ```
 
 The Postgres tests run only when `NUVEL_MCP_TEST_DATABASE_URL` points at a throwaway

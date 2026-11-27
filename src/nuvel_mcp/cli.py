@@ -352,19 +352,23 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
     else:
         print(f"Storage: files under {feedback_dir}.", file=sys.stderr)
 
-    server = SkillsMCPServer(
-        loader,
-        theme=args.theme,
-        require_filter=require_filter,
-        with_org_memory=args.with_org_memory,
-        feedback_dir=args.feedback_dir,
-        tools=args.tools,
-        trace_store=trace_store,
-        recipe_store=recipe_store,
-        ui_event_store=ui_event_store,
-        usage=usage,
-        database=db,
-    )
+    try:
+        server = SkillsMCPServer(
+            loader,
+            theme=args.theme,
+            require_filter=require_filter,
+            with_org_memory=args.with_org_memory,
+            feedback_dir=args.feedback_dir,
+            tools=args.tools,
+            trace_store=trace_store,
+            recipe_store=recipe_store,
+            ui_event_store=ui_event_store,
+            usage=usage,
+            database=db,
+        )
+    except ValueError as exc:  # NUVEL_MCP_STATE_KEY
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     server.country_lookup = country_lookup
     if args.require_auth and args.no_auth:
         print("Error: --require-auth and --no-auth are mutually exclusive.", file=sys.stderr)

@@ -12,6 +12,33 @@ From here on the package is versioned and released on its own.
 
 ## [Unreleased]
 
+### Added
+
+- MCP **2026-07-28**, alongside 2024-11-05 to 2025-11-25 on the same stdio
+  process and `/mcp` endpoint. A request carrying the per-request `_meta`
+  envelope is served statelessly: `server/discover`, `resultType` on every
+  result, the server's identity in result `_meta`, and `ttlMs` / `cacheScope`
+  on discover, list and read results. Unsupported versions get `-32022`, the
+  removed methods (`ping`, `logging/setLevel`, resource subscriptions) `-32601`.
+- Over HTTP, 2026-07-28 requests need no session; `MCP-Protocol-Version`,
+  `Mcp-Method` and `Mcp-Name` are checked against the body (`400`, `-32020`),
+  and the status follows the error code (`404` for an unknown method).
+- Multi round-trip requests in the kernel (`nuvel_mcp.protocol.mrtr`): a tool
+  can ask the client for input with `input_required`; `requestState` is sealed
+  with HMAC-SHA256 and bound to the caller, the call and an expiry.
+  `NUVEL_MCP_STATE_KEY` sets the key (no tool asks for input yet).
+- `conformance` extra and `tests/test_conformance_sdk.py`: the official MCP
+  SDK's client drives the server in both eras over stdio and HTTP, in its own
+  CI job.
+
+### Changed
+
+- `initialize` answers with the client's protocol version when it is one we
+  speak (2024-11-05 to 2025-11-25), else `2025-11-25`; it used to answer
+  `2024-11-05` whatever was asked. Capabilities are now the spec's shape
+  (`{"resources": {}, "tools": {}}`).
+- `tools/list` is sorted by name.
+
 ## [0.6.0] - 2026-11-24
 
 ### Added

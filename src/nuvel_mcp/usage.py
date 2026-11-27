@@ -75,6 +75,16 @@ def client_info(params) -> dict:
     }
 
 
+def client_info_from_meta(meta) -> dict:
+    """The same three fields from a 2026-07-28 request's ``_meta`` envelope,
+    which names the client app and version on every request."""
+    meta = meta if isinstance(meta, dict) else {}
+    return client_info({
+        "clientInfo": meta.get("io.modelcontextprotocol/clientInfo"),
+        "protocolVersion": meta.get("io.modelcontextprotocol/protocolVersion"),
+    })
+
+
 @runtime_checkable
 class UsageStore(Protocol):
     def record_batch(self, events: list[dict]) -> None:

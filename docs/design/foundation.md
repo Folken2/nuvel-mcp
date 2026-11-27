@@ -174,8 +174,7 @@ the method:
 
 ```json
 {"resultType": "complete",
- "serverInfo": {"name": "nuvel-skills", "version": "0.7.0"},
- "supportedVersions": ["2026-07-28", "2025-11-25"],
+ "supportedVersions": ["2026-07-28"],
  "capabilities": {
    "tools": {"listChanged": true}, "resources": {"listChanged": true}, "prompts": {},
    "extensions": {
@@ -183,11 +182,15 @@ the method:
      "io.modelcontextprotocol/ui": {},
      "io.modelcontextprotocol/tasks": {},
      "io.github.folken2/plugins": {"version": 1}}},
+ "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "nuvel-skills", "version": "0.7.0"}},
  "ttlMs": 300000, "cacheScope": "private"}
 ```
 
-**verify**: the exact discover result shape (whether there is a `supportedVersions`
-field, and where `serverInfo` goes) must be read from the schema before this is built.
+Checked against the 2026-07-28 schema (`DiscoverResult`): `supportedVersions`,
+`capabilities` and an optional `instructions`; `serverInfo` goes in result `_meta`.
+`supportedVersions` lists the modern versions only, as the official SDK does: a legacy
+version can't be named in a request envelope, and a legacy client opens with
+`initialize` anyway. The `-32022` error's `data.supported` lists the same.
 
 ### 5.3 Results, caching and errors
 
@@ -218,15 +221,17 @@ kernel turns that into the wire result.
   gets `-32602`, with a fixed message.
 - **Key.** The key comes from a new variable, `NUVEL_MCP_STATE_KEY` (32 or more bytes,
   base64). Without it, the key is random per process, which is right for stdio and
-  wrong for replicas. Over HTTP with `NUVEL_MCP_PUBLIC_URL` set, the server refuses to
-  start without the key. Rotation is a comma-separated list: the first key signs, any
+  wrong for replicas. Over HTTP with `NUVEL_MCP_PUBLIC_URL` set, the server warns at
+  start without the key; it will refuse to start once a shipped tool asks for input,
+  so that today's deployments don't break on an upgrade that changes nothing for them. Rotation is a comma-separated list: the first key signs, any
   key verifies.
 - **Capabilities are respected.** If the client did not declare `elicitation`, the tool
   must have a fallback, normally a tool error that says what is missing. The kernel
   refuses to emit an input request of a kind the client did not declare.
 - **Legacy clients.** On a 2025-11-25 session, the adapter turns an `InputRequired`
   into a real `elicitation/create` request on the session stream, then resumes the tool
-  with the answer. That keeps one way of writing tools for both eras.
+  with the answer. That keeps one way of writing tools for both eras. Until the first
+  tool needs it, a legacy session gets an error naming 2026-07-28 instead.
 - Sampling is deprecated, so no tool of ours will ask for it.
 
 ### 5.5 Subscriptions and notifications
@@ -436,7 +441,8 @@ apart from behaviour changes, as for the agent packages.
 3. Remove the 2024-11-05 transport after phase 2, as proposed, or keep it until a major
    version?
 4. A domain for our extension prefix, if `io.github.folken2` should not be permanent.
-5. The items marked **verify**: the discover result schema and the authorization pages.
+5. The item still marked **verify**: the authorization pages. (The discover schema was
+   checked in phase 0; see 5.2.)
 
 ## Sources
 
