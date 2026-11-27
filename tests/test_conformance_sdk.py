@@ -141,3 +141,40 @@ def test_sdk_reads_every_skill_file_back_to_its_manifest_digest(httpd):
                 else base64.b64decode(content.blob))
         assert "sha256:" + hashlib.sha256(data).hexdigest() == resource["digest"]
         assert len(data) == resource["size"]
+
+
+async def _listen_for_update(target, touch) -> tuple:
+    uri = "skill://hr/onboarding/SKILL.md"
+    async with Client(target, mode="2026-07-28", read_timeout_seconds=TIMEOUT) as client:
+        async with client.listen(resource_subscriptions=[uri],
+                                 tools_list_changed=True) as sub:
+            touch()
+            event = await asyncio.wait_for(sub.__anext__(), TIMEOUT)
+            return sub.honored, event
+
+
+def _touch_onboarding(hub):
+    def touch():
+        path = hub / "hr" / "onboarding" / "SKILL.md"
+        path.write_text(path.read_text() + "\nChanged.\n")
+    return touch
+
+
+def _check_update(honored, event):
+    assert list(honored.resource_subscriptions) == ["skill://hr/onboarding/SKILL.md"]
+    assert not honored.tools_list_changed  # never promised: tools don't change
+    assert type(event).__name__ == "ResourceUpdated"
+    assert str(event.uri) == "skill://hr/onboarding/SKILL.md"
+
+
+def test_sdk_listen_over_http(httpd, hub):
+    httpd.mcp.subscriptions.interval = 0.05
+    _check_update(*asyncio.run(_listen_for_update(httpd.url + "/mcp", _touch_onboarding(hub))))
+
+
+def test_sdk_listen_over_stdio(hub):
+    params = StdioServerParameters(
+        command=sys.executable, args=["-m", "nuvel_mcp", "serve", "--skills-dir", str(hub)],
+        env={"NUVEL_FEEDBACK_DIR": os.environ["NUVEL_FEEDBACK_DIR"],
+             "NUVEL_MCP_WATCH_INTERVAL": "0.1"})
+    _check_update(*asyncio.run(_listen_for_update(params, _touch_onboarding(hub))))

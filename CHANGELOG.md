@@ -14,6 +14,19 @@ From here on the package is versioned and released on its own.
 
 ### Added
 
+- `subscriptions/listen` for 2026-07-28 clients: `resourcesListChanged` and
+  `resourceSubscriptions` for skill files (up to 256 URIs), found by polling
+  the hub every `NUVEL_MCP_WATCH_INTERVAL` seconds (default 2). The
+  acknowledgment names what is honored; tools and prompts are never promised.
+  Over HTTP the stream is an SSE response under the per-principal stream cap,
+  closed by the client to cancel, and ended by the server with the listen
+  result on shutdown; on stdio, `notifications/cancelled` ends one.
+- `server/discover` declares `resources: {"listChanged": true, "subscribe":
+  true}` when a hub is served. `initialize` doesn't: legacy sessions get no
+  change notifications.
+
+### Added
+
 - The MCP Skills extension (`io.modelcontextprotocol/skills`, with
   `directoryRead`): `skills/list` (paginated), `skills/get` and
   `resources/directory/read`, and every file of a skill readable at

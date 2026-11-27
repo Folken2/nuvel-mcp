@@ -45,6 +45,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -59,7 +60,7 @@ from nuvel_mcp import usage as usage_mod
 from nuvel_mcp.auth import current_principal
 from nuvel_mcp.extensions import skills as skills_ext
 from nuvel_mcp.installer import install_skill
-from nuvel_mcp.protocol import envelope, kernel, mrtr, versions
+from nuvel_mcp.protocol import envelope, kernel, mrtr, subscriptions, versions
 from nuvel_mcp.protocol.errors import (  # noqa: F401 - re-exported for the transports
     HTTP_STATUS,
     INTERNAL_ERROR,
@@ -602,6 +603,12 @@ class SkillsMCPServer:
             self.extensions.append(self.skills)
         for extension in self.extensions:
             self._methods.update(extension.methods())
+        # subscriptions/listen exists on the modern path only (_dispatch_modern
+        # answers it); named here so usage events know it.
+        self._methods[subscriptions.METHOD] = self._listen_legacy
+        self.subscriptions = subscriptions.Broker(
+            self._list_fingerprint, self._resource_fingerprint,
+            subscriptions.interval_from_env())
         self._tools = {
             "search_skills": self.tool_search_skills,
             "list_skills": self.tool_list_skills,
@@ -702,10 +709,13 @@ class SkillsMCPServer:
 
     # --- Method handlers -----------------------------------------------------
 
-    def capabilities(self) -> dict:
-        """What this server offers, the same in both eras (in initialize, the
-        extensions follow the pre-2026 convention of riding in capabilities)."""
-        capabilities: dict = {"resources": {}, "tools": {}}
+    def capabilities(self, modern: bool = False) -> dict:
+        """What this server offers (in initialize, the extensions follow the
+        pre-2026 convention of riding in capabilities). Resource change
+        notifications exist only on the modern path, through subscriptions/listen."""
+        resources = ({"listChanged": True, "subscribe": True}
+                     if modern and self.loader is not None else {})
+        capabilities: dict = {"resources": resources, "tools": {}}
         if self.extensions:
             capabilities["extensions"] = {e.identifier: e.settings() for e in self.extensions}
         return capabilities
@@ -720,7 +730,32 @@ class SkillsMCPServer:
         }
 
     def handle_discover(self, params):
-        return kernel.discover(self.capabilities())
+        return kernel.discover(self.capabilities(modern=True))
+
+    # --- subscriptions/listen ------------------------------------------------------------
+
+    def _listen_legacy(self, params):
+        raise McpError(METHOD_NOT_FOUND, "Method not found")
+
+    def _list_fingerprint(self):
+        return self.skills.list_fingerprint() if self.loader is not None else None
+
+    def _resource_fingerprint(self, uri):
+        return self.skills.fingerprint(uri) if self.loader is not None else None
+
+    def _honor(self, requested: subscriptions.Filter) -> subscriptions.Filter:
+        """What this server can report: the resource list and skill files.
+        Tools and prompts never change while it runs, so they are not promised."""
+        if self.loader is None:
+            return subscriptions.Filter()
+        uris = tuple(u for u in requested.uris if self.skills.watchable(u))
+        return subscriptions.Filter(resources_list=requested.resources_list,
+                                    uris=uris[:subscriptions.MAX_URIS])
+
+    def _open_listen(self, msg_id, params):
+        honored = self._honor(subscriptions.read_filter(params))
+        sub = self.subscriptions.open(msg_id, honored)
+        return subscriptions.Listen(sub, subscriptions.acknowledged(msg_id, honored))
 
     def enable_remote_mode(self) -> None:
         """Prepare this server to be served over HTTP (called by the transport).
@@ -1917,6 +1952,8 @@ class SkillsMCPServer:
             if handler is None:
                 raise McpError(METHOD_NOT_FOUND, "Method not found")
             context = self._open_round(method, params, context)
+            if method == subscriptions.METHOD:
+                return self._open_listen(msg_id, params)
         except McpError as exc:
             return error_response(msg_id, exc.code, exc.message, exc.data)
         reset = envelope.current_request.set(context)
@@ -1994,9 +2031,21 @@ class SkillsMCPServer:
             raise McpError(INTERNAL_ERROR, f"Internal error: {exc}") from None
 
     def serve(self, stdin: IO[str] | None = None, stdout: IO[str] | None = None) -> None:
-        """Run the stdio read/dispatch/write loop until EOF on stdin."""
+        """Run the stdio read/dispatch/write loop until EOF on stdin.
+
+        Each subscriptions/listen gets a pump thread that writes its
+        notifications as they come; one lock keeps every line whole. A
+        ``notifications/cancelled`` naming a listen's id ends it, silently.
+        """
         stdin = stdin or sys.stdin
         stdout = stdout or sys.stdout
+        lock = threading.Lock()
+
+        def write(message) -> None:
+            with lock:
+                _write_message(stdout, message)
+
+        listens: dict = {}  # listen request id -> Subscription
         where = self.loader.skills_dir if self.loader is not None else "none (feedback-only)"
         log(f"nuvel-skills MCP server starting (skills_dir={where})")
         for line in stdin:
@@ -2007,20 +2056,69 @@ class SkillsMCPServer:
                 message = json.loads(line)
             except (ValueError, RecursionError) as exc:  # bad JSON, an int over the digit limit, nesting too deep
                 log(f"Parse error: {type(exc).__name__}")  # never the line's content
-                _write_message(stdout, error_response(None, PARSE_ERROR, "Parse error"))
+                write(error_response(None, PARSE_ERROR, "Parse error"))
                 continue
 
             if self.gate is not None:
                 refusal = self.gate(message)
                 if refusal is not None:
                     if isinstance(message, dict) and "id" in message:
-                        _write_message(stdout, refusal)
+                        write(refusal)
                     continue
 
+            cancelled = _cancelled_id(message)
+            if cancelled is not None and _id_key(cancelled) in listens:
+                self._end_listen(listens.pop(_id_key(cancelled)))
+                continue
+            if (isinstance(message, dict) and message.get("method") == subscriptions.METHOD
+                    and _id_key(message.get("id")) in listens):
+                write(error_response(message.get("id"), INVALID_REQUEST,
+                                     "A subscription with this id is already open"))
+                continue
+
             response = self.dispatch(message)
-            if response is not None:
-                _write_message(stdout, response)
+            if isinstance(response, subscriptions.Listen):
+                listens[_id_key(response.subscription.id)] = response.subscription
+                threading.Thread(target=self._pump, args=(response, write), daemon=True,
+                                 name="mcp-listen").start()
+            elif response is not None:
+                write(response)
+        for sub in listens.values():
+            self._end_listen(sub)
         log("nuvel-skills MCP server: EOF on stdin, shutting down.")
+
+    def _end_listen(self, sub) -> None:
+        """The client ended it: no further message for it, not even a result."""
+        self.subscriptions.close(sub)
+        sub.outbox.put(_CANCELLED)
+
+    def _pump(self, listen, write) -> None:
+        sub = listen.subscription
+        write(listen.ack)
+        while True:
+            item = sub.outbox.get()
+            if item is _CANCELLED:
+                return
+            if item is subscriptions.CLOSED:
+                write(subscriptions.closing_result(sub.id, SERVER_INFO))
+                return
+            write(subscriptions.notification(sub.id, item))
+
+
+# Outbox sentinel for a subscription the client cancelled (stdio).
+_CANCELLED = object()
+
+
+def _id_key(value):
+    """A JSON-RPC id as a dict key that keeps 1 and "1" (and True) apart."""
+    return (type(value).__name__, value)
+
+
+def _cancelled_id(message):
+    if not isinstance(message, dict) or message.get("method") != "notifications/cancelled":
+        return None
+    params = message.get("params")
+    return params.get("requestId") if isinstance(params, dict) else None
 
 
 def _write_message(stdout: IO[str], message) -> None:

@@ -107,6 +107,25 @@ naming rules, it has a `description`, and it has at most 512 files and 16 MiB.
 The server log names any skill left out and why. The hub tools
 (`search_skills`, `get_skill`, ...) are unchanged.
 
+### Change notifications
+
+`subscriptions/listen` (2026-07-28 requests only) opens a stream of change
+notifications. The server honors `resourcesListChanged` (a skill added to or
+removed from the hub) and `resourceSubscriptions` for skill files
+(`skill://<theme>/<name>/<file>`, or a skill's earlier URI for its
+`SKILL.md`), up to 256 URIs; the acknowledgment lists what it honors, and it
+never promises `toolsListChanged` or `promptsListChanged`, since tools and
+prompts don't change while it runs. Changes are found by polling the hub's
+files every `NUVEL_MCP_WATCH_INTERVAL` seconds (default 2), from the moment
+the stream opens; each replica watches its own copy.
+
+Over HTTP the stream is the listen request's SSE response: it counts against
+`NUVEL_MCP_MAX_STREAMS_PER_PRINCIPAL`, gets a keep-alive comment every ping
+interval, ends when the token expires, and is cancelled by closing it; on
+shutdown the server sends the listen request's result before closing. On stdio
+the notifications share stdout, and `notifications/cancelled` with the listen
+request's id ends one.
+
 ### Over HTTP
 
 The HTTP transport (Streamable HTTP on `/mcp`, legacy SSE, OAuth 2.1) is part of
@@ -195,6 +214,7 @@ All are optional. Command-line flags, where they exist, take precedence.
 | `NUVEL_MCP_OAUTH_STORE` | `~/.nuvel/oauth.json` | OAuth store file (without a database). |
 | `NUVEL_MCP_PUBLIC_URL` | unset | Public base URL of a remote HTTP server (OAuth resource and issuer). |
 | `NUVEL_MCP_ACCESS_TOKEN` | unset | Bearer token the stdio server checks with `--require-auth`. |
+| `NUVEL_MCP_WATCH_INTERVAL` | `2` | Seconds between checks of the hub's files for `subscriptions/listen` streams (0.05 to 3600). |
 | `NUVEL_MCP_STATE_KEY` | random per process | Key(s) sealing the `requestState` of multi round-trip requests: 32 or more random bytes, base64; comma-separate several to rotate (the first signs, any opens). Set the same value on every replica. An invalid key stops the server. |
 | `NUVEL_OAUTH_LOGIN` | GitHub login | `none` disables interactive login (operator-issued clients only). |
 | `NUVEL_OAUTH_GITHUB_CLIENT_ID`, `NUVEL_OAUTH_GITHUB_CLIENT_SECRET` | unset | GitHub OAuth app for the interactive login. |
