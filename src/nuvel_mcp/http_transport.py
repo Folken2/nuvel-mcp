@@ -93,12 +93,13 @@ from nuvel_mcp.oauth import (
     OAuthStoreError,
     TokenInfo,
 )
-from nuvel_mcp.protocol import envelope, headers as mcp_headers, versions
+from nuvel_mcp.protocol import envelope, headers as mcp_headers, subscriptions, versions
 from nuvel_mcp.protocol.errors import HEADER_MISMATCH, HTTP_STATUS, McpError
 from nuvel_mcp.server import (
     INTERNAL_ERROR,
     INVALID_REQUEST,
     PARSE_ERROR,
+    SERVER_INFO,
     SkillsMCPServer,
     brand_asset,
     error_response,
@@ -726,6 +727,7 @@ class McpHTTPServer(ThreadingHTTPServer):
         """Close every session (ending SSE streams), then stop serve_forever."""
         self.stopping.set()
         self.sessions.close_all()
+        self.mcp.subscriptions.close_all()  # each stream sends its listen result
         self.shutdown()
 
 
@@ -1458,6 +1460,9 @@ class McpRequestHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.ACCEPTED)
             return
         response = responses[0]
+        if isinstance(response, subscriptions.Listen):
+            self._listen(info, response)
+            return
         error = response.get("error")
         if error is not None:
             self._send_json(HTTP_STATUS.get(error.get("code"), HTTPStatus.OK), response)
@@ -1468,6 +1473,66 @@ class McpRequestHandler(BaseHTTPRequestHandler):
                        {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
             return
         self._send_json(HTTPStatus.OK, response)
+
+    def _listen(self, info: TokenInfo | None, listen: subscriptions.Listen) -> None:
+        """Hold a subscriptions/listen response stream open: the acknowledgment,
+        then each notification, a keep-alive comment every ping interval, and
+        the listen request's result when the server ends it. Closing the
+        stream is the client's cancellation."""
+        sub = listen.subscription
+        broker = self.server.mcp.subscriptions
+        if not accepts_sse(self.headers.get("Accept")):
+            broker.close(sub)  # before answering: nothing is left open once the 400 is out
+            self._send_json(HTTPStatus.BAD_REQUEST, error_response(
+                sub.id, INVALID_REQUEST, "subscriptions/listen needs Accept: text/event-stream"))
+            return
+        try:
+            still_valid = self._still_valid(info)
+            with self._stream_slot(info, sub) as token:
+                self._open_sse()
+                self.wfile.write(sse_event(listen.ack))
+                self.wfile.flush()
+                while True:
+                    try:
+                        item = sub.outbox.get(timeout=self.server.config.ping_interval)
+                    except queue.Empty:
+                        if self.server.stopping.is_set():
+                            item = subscriptions.CLOSED
+                        elif not still_valid():
+                            break  # token expired or revoked: drop, like a legacy stream
+                        else:
+                            self.wfile.write(b": ping\n\n")
+                            self.wfile.flush()
+                            continue
+                    if isinstance(item, _Displaced):
+                        if item.token is token:
+                            break
+                        continue
+                    if item is subscriptions.CLOSED:
+                        self.wfile.write(sse_event(
+                            subscriptions.closing_result(sub.id, SERVER_INFO)))
+                        self.wfile.flush()
+                        break
+                    self.wfile.write(sse_event(subscriptions.notification(sub.id, item)))
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # the client closed the stream: that is its cancellation
+        finally:
+            broker.close(sub)
+
+    def _open_sse(self) -> None:
+        self.close_connection = True
+        # Every write is bounded (sendall's timeout is its total duration), so
+        # a client that stops reading frees this thread after read_timeout.
+        self.connection.settimeout(self.server.config.read_timeout)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")
+        for key, value in {**self._security_headers(), **self._cors_headers()}.items():
+            self.send_header(key, value)
+        self.end_headers()
 
     def _get_mcp(self) -> None:
         info = self._authenticate()

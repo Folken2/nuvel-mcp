@@ -243,8 +243,14 @@ and, with Tasks, `notifications/tasks`. Each carries the subscription id, which 
 request's JSON-RPC id.
 
 The existing stream limits (`NUVEL_MCP_MAX_STREAMS_PER_PRINCIPAL`, keep-alives, the
-deadlines) apply to these streams. A change has to reach every replica, so the feed is
-an interface: in-process for files, `LISTEN/NOTIFY` for Postgres.
+deadlines) apply to these streams. Built (`protocol/subscriptions.py`): every change this
+server can report is a change to the hub's files, so a poller compares fingerprints
+(the `resources/list` URIs, each subscribed file's digest) with what each subscription
+saw when it opened, every `NUVEL_MCP_WATCH_INTERVAL` seconds. Each replica watches its
+own copy of the hub, so no cross-replica feed is needed yet; `LISTEN/NOTIFY` becomes
+necessary only for state that lives in Postgres, like tasks (6.3). The acknowledgment
+never promises `toolsListChanged` or `promptsListChanged`: tools and prompts don't change
+while the server runs.
 
 Request-scoped notifications (`notifications/progress`, and `notifications/message` only
 when `_meta` asks for a log level) go only on that request's own response stream.

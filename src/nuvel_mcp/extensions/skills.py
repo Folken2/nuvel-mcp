@@ -335,6 +335,33 @@ class SkillsExtension:
             content["blob"] = base64.b64encode(raw).decode("ascii")
         return {"contents": [content]}
 
+    # --- change detection (subscriptions/listen) ---------------------------------------
+
+    @staticmethod
+    def watchable(uri: object) -> bool:
+        """True for a resource this extension can report changes of: a file of
+        a skill, or a skill by its earlier ``skill://<theme>/<name>`` form."""
+        segments = parse_uri(uri)
+        return segments is not None and len(segments) >= 2
+
+    def fingerprint(self, uri: str) -> str | None:
+        """The current digest of the file at *uri*, ``None`` when it is not served."""
+        segments = parse_uri(uri)
+        if segments is None or len(segments) < 2:
+            return None
+        if len(segments) == 2:
+            segments = [*segments, SKILL_FILE]
+        try:
+            files = self._skill_files(segments[0], segments[1])
+        except McpError:
+            return None
+        rel = "/".join(segments[2:])
+        return next((f.digest for f in files if f.rel == rel), None)
+
+    def list_fingerprint(self) -> tuple[str, ...]:
+        """What ``resources/list`` would name now."""
+        return tuple(r["uri"] for r in self.resource_list())
+
     def resource_list(self) -> list[dict]:
         """``resources/list``: each skill's ``SKILL.md``."""
         resources = []

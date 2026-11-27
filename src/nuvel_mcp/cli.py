@@ -366,7 +366,7 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
             usage=usage,
             database=db,
         )
-    except ValueError as exc:  # NUVEL_MCP_STATE_KEY
+    except ValueError as exc:  # NUVEL_MCP_STATE_KEY, NUVEL_MCP_WATCH_INTERVAL
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     server.country_lookup = country_lookup
