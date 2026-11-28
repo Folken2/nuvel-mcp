@@ -14,6 +14,20 @@ From here on the package is versioned and released on its own.
 
 ### Added
 
+- OAuth Client ID Metadata Documents: a `client_id` that is an https URL is
+  fetched at `/authorize` (https only, every address public and the connection
+  pinned to it, no redirects, 5 KB, rate-limited), checked (its own URL as
+  `client_id`, a name, redirect URIs on loopback, its own host or the
+  allow-list, a public client) and cached per `Cache-Control`. Advertised as
+  `client_id_metadata_document_supported`; `NUVEL_OAUTH_CIMD=0` turns it off,
+  `NUVEL_OAUTH_CIMD_HOSTS` limits the hosts. The consent page names the
+  document's host and warns when the redirect comes back to this computer.
+- `/register` checks, keeps and echoes `application_type` (`native` or `web`).
+- `server/discover` declares `io.modelcontextprotocol/oauth-client-credentials`
+  over HTTP with OAuth.
+
+### Added
+
 - Tasks (`io.modelcontextprotocol/tasks`) for 2026-07-28 clients:
   `tasks/get`, `tasks/update` and `tasks/cancel`, `notifications/tasks` through
   `subscriptions/listen` (`taskIds`), and `Mcp-Name` routing by task id over

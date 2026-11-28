@@ -54,6 +54,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from nuvel_mcp import cimd
+
 try:  # POSIX: serialize read-modify-write across processes (server + CLI).
     import fcntl
 except ImportError:  # pragma: no cover - Windows
@@ -303,6 +305,11 @@ class OAuthConfig:
     # None = any authenticated user may log in (warned at startup).
     allowed_users: frozenset[str] | None = None
     redirect_allowlist: frozenset[str] = frozenset()
+    # Client ID Metadata Documents: a client named by an https URL is fetched
+    # from it (NUVEL_OAUTH_CIMD=0 turns that off). With hosts listed
+    # (NUVEL_OAUTH_CIMD_HOSTS), only clients on those hosts are accepted.
+    cimd: bool = True
+    cimd_hosts: frozenset[str] = frozenset()
     register_limit: int = 20  # per client IP per window
     register_global_limit: int = 200  # all IPs per window
     register_window: float = 3600.0
@@ -328,6 +335,8 @@ class OAuthConfig:
             login=os.environ.get("NUVEL_OAUTH_LOGIN", "").strip().lower(),
             allowed_users=frozenset(u.lower() for u in users) if users else None,
             redirect_allowlist=frozenset(_split_env("NUVEL_OAUTH_REDIRECT_ALLOWLIST")),
+            cimd=os.environ.get("NUVEL_OAUTH_CIMD", "").strip() != "0",
+            cimd_hosts=frozenset(h.lower() for h in _split_env("NUVEL_OAUTH_CIMD_HOSTS")),
         )
 
     @property
@@ -508,6 +517,10 @@ class OAuthProvider:
         self._github_pins: dict[str, int] = {}
         self.register_limiter = RateLimiter(config.register_limit, config.register_global_limit,
                                             config.register_window, lambda: self.clock())
+        # Metadata documents are fetched at most this often, per caller and in all.
+        self.cimd_limiter = RateLimiter(config.register_limit, config.register_global_limit,
+                                        config.register_window, lambda: self.clock())
+        self.cimd_fetcher = cimd.Fetcher()
 
     # --- metadata ----------------------------------------------------------------
 
@@ -522,7 +535,8 @@ class OAuthProvider:
         }
 
     @staticmethod
-    def authorization_server_metadata(origin: str, login_mode: str | None = None) -> dict:
+    def authorization_server_metadata(origin: str, login_mode: str | None = None,
+                                      cimd_supported: bool = False) -> dict:
         if login_mode == "none":  # no interactive login: operator-issued clients only
             return {
                 "issuer": origin,
@@ -545,6 +559,7 @@ class OAuthProvider:
             "token_endpoint_auth_methods_supported": [
                 "none", "client_secret_basic", "client_secret_post"],
             "authorization_response_iss_parameter_supported": True,
+            "client_id_metadata_document_supported": cimd_supported,
         }
 
     # --- clients -------------------------------------------------------------------
@@ -605,6 +620,14 @@ class OAuthProvider:
         response_types = metadata.get("response_types", ["code"])
         if response_types != ["code"]:
             raise OAuthError("invalid_client_metadata", "response_types must be [\"code\"]")
+        # application_type (OIDC Registration): "native" for desktop, mobile and
+        # CLI clients, "web" otherwise. Redirect URIs are already limited to
+        # loopback or the allow-list, so it changes nothing here; it is checked,
+        # kept and echoed, as clients must send it (MCP 2026-07-28).
+        app_type = metadata.get("application_type")
+        if app_type is not None and app_type not in ("native", "web"):
+            raise OAuthError("invalid_client_metadata",
+                             'application_type must be "native" or "web"')
         name = metadata.get("client_name", "")
         # Anyone can register, and operators read these names in a terminal
         # (client list, usage reports): no ANSI escapes or other controls.
@@ -617,9 +640,12 @@ class OAuthProvider:
             record, secret = self._new_client(
                 data, name=name, redirect_uris=list(uris), auth_method=method,
                 grant_types=list(grants), source="dcr")
+            if app_type is not None:
+                record["application_type"] = app_type
         response = {k: record[k] for k in (
             "client_id", "client_name", "redirect_uris", "token_endpoint_auth_method",
-            "grant_types", "response_types", "client_id_issued_at")}
+            "grant_types", "response_types", "client_id_issued_at", "application_type")
+            if k in record}
         if secret:
             response["client_secret"] = secret
             response["client_secret_expires_at"] = 0
@@ -759,9 +785,13 @@ class OAuthProvider:
         ``redirect_uri``/``state`` attributes set for errors that go back to
         the client.
         """
+        client_id = params.get("client_id") or ""
         with self.store.reading() as data:
-            client = data["clients"].get(params.get("client_id") or "")
+            client = data["clients"].get(client_id)
             client = copy.deepcopy(client) if client else None
+        if (self.config.cimd and cimd.is_client_id_url(client_id)
+                and (client is None or client.get("source") == "cimd")):
+            client = self._cimd_client(client_id, client, remote_addr)
         if client is None:
             raise AuthorizeError("Unknown client_id.")
         redirect_uri = params.get("redirect_uri") or ""
@@ -798,6 +828,8 @@ class OAuthProvider:
             "id": secrets.token_urlsafe(32),
             "client_id": client["client_id"],
             "client_name": client.get("client_name") or client["client_id"],
+            "client_host": (urllib.parse.urlsplit(client["client_id"]).hostname
+                            if client.get("source") == "cimd" else None),
             "redirect_uri": redirect_uri,
             "state": state,
             "code_challenge": challenge,
@@ -821,6 +853,65 @@ class OAuthProvider:
                 raise AuthorizeError("Too many pending sign-ins; try again shortly.")
             self._logins[login["id"]] = login
         return login
+
+    def _cimd_client(self, url: str, cached: dict | None, remote_addr: str | None) -> dict:
+        """The client a metadata document describes, as a stored client
+        record: the cached one while fresh, else fetched and checked again.
+        Raises AuthorizeError (fixed text) when it can't be used."""
+        host = urllib.parse.urlsplit(url).hostname or ""
+        if self.config.cimd_hosts and host not in self.config.cimd_hosts:
+            raise AuthorizeError("This client is not accepted by this server.")
+        now = self.clock()
+        if cached is not None and cached.get("cimd_expires_at", 0) > now:
+            return cached
+        retry = self.cimd_limiter.hit(remote_addr or "-")
+        if retry:
+            raise AuthorizeError("Too many sign-ins from new clients; try again shortly.")
+        try:
+            document, ttl = self.cimd_fetcher.fetch(url)
+        except cimd.CimdError as exc:
+            raise AuthorizeError(f"{exc}.") from None
+        record = self._cimd_record(url, host, document, now, ttl)
+        with self.store.transaction() as data:
+            data["clients"][url] = record
+        return copy.deepcopy(record)
+
+    def _cimd_record(self, url: str, host: str, doc, now: float, ttl: int) -> dict:
+        """Check a metadata document (the draft's required fields, a public
+        client, redirect URIs on loopback, the client's own host or the
+        redirect allow-list) and turn it into a client record."""
+        def bad(why: str):
+            return AuthorizeError(f"The client's metadata document {why}.")
+
+        if not isinstance(doc, dict) or doc.get("client_id") != url:
+            raise bad("does not name this URL as its client_id")
+        name = doc.get("client_name")
+        if (not isinstance(name, str) or not name.strip() or len(name) > MAX_CLIENT_NAME
+                or _unprintable(name)):
+            raise bad(f"needs a client_name of at most {MAX_CLIENT_NAME} printable characters")
+        uris = doc.get("redirect_uris")
+        if (not isinstance(uris, list) or not uris
+                or not all(isinstance(u, str) and u and not _unprintable(u) for u in uris)):
+            raise bad("needs a non-empty list of redirect_uris")
+        for uri in uris:
+            parts = urllib.parse.urlsplit(uri)
+            same_site = (parts.scheme == "https" and parts.hostname is not None
+                         and (parts.hostname == host or parts.hostname.endswith("." + host))
+                         and not parts.fragment and not parts.username and not parts.password)
+            if not (_is_dcr_loopback(uri) or same_site or uri in self.config.redirect_allowlist):
+                raise bad("lists a redirect URI that is not loopback or on its own host")
+        if doc.get("token_endpoint_auth_method", "none") != "none":
+            raise bad("asks for client authentication this server does not offer (only 'none')")
+        grants = doc.get("grant_types", ["authorization_code"])
+        if (not isinstance(grants, list) or "authorization_code" not in grants
+                or not set(grants) <= {"authorization_code", "refresh_token"}):
+            raise bad("needs grant_types of authorization_code (and optionally refresh_token)")
+        if doc.get("response_types", ["code"]) != ["code"]:
+            raise bad('needs response_types ["code"]')
+        return {"client_id": url, "client_name": name, "redirect_uris": list(uris),
+                "token_endpoint_auth_method": "none", "grant_types": list(grants),
+                "response_types": ["code"], "client_id_issued_at": int(now),
+                "source": "cimd", "cimd_expires_at": now + ttl}
 
     def get_login(self, login_id: str | None, cookie: str | None) -> dict | None:
         """The pending login, if it exists, is unexpired and matches the browser cookie."""
@@ -1213,10 +1304,17 @@ def consent_page(login: dict, login_mode: str) -> bytes:
     host = urllib.parse.urlsplit(login["redirect_uri"]).netloc
     via = "GitHub" if login_mode == "github" else "the DEV login page"
     scopes = "".join(f"<li><code>{e(s)}</code></li>" for s in login["scope"])
+    origin = ""
+    if login.get("client_host"):  # a client named by its metadata document's URL
+        origin = f" (as described by <code>{e(login['client_host'])}</code>)"
+    warning = ""
+    if _is_dcr_loopback(login["redirect_uri"]):
+        warning = ("<p><b>It will come back to this computer.</b> Continue only if you "
+                   "started this sign-in yourself, here.</p>")
     return page("Authorize access", f"""
 <div class="box"><h1>Authorize access to Nuvel Skills</h1>
-<p><b>{e(login['client_name'])}</b> wants to use this skills server on your behalf.
-It will be sent back to <code>{e(host)}</code>.</p>
+<p><b>{e(login['client_name'])}</b>{origin} wants to use this skills server on your behalf.
+It will be sent back to <code>{e(host)}</code>.</p>{warning}
 <p>Requested scopes:</p><ul>{scopes}</ul>
 <p>You will sign in with {via} next.</p>
 <form method="post" action="/authorize">
