@@ -197,6 +197,18 @@ curl -s -u "$NUVEL_CLIENT_ID:$NUVEL_CLIENT_SECRET" \
 #    Authorization: Bearer $ACCESS_TOKEN
 ```
 
+Clients can also sign in without registering, with a Client ID Metadata
+Document (MCP 2026-07-28): a `client_id` that is an https URL serving the
+client's name and redirect URIs. The server fetches it (https only, public
+addresses only, no redirects, at most 5 KB), keeps it as long as its
+`Cache-Control` allows, and accepts only redirect URIs on loopback, on the
+document's own host or in `NUVEL_OAUTH_REDIRECT_ALLOWLIST`; the consent page
+names the document's host. `NUVEL_OAUTH_CIMD=0` turns this off and
+`NUVEL_OAUTH_CIMD_HOSTS` limits it to listed hosts. Dynamic registration
+(`/register`, deprecated in 2026-07-28) still works and echoes
+`application_type`. Over authenticated HTTP, `server/discover` declares the
+OAuth client credentials extension.
+
 For an MCP client that can only be given a URL (a Claude custom connector with
 no sign-in), `nuvel-mcp client create --name alice --url-key` prints a
 per-client `connector_url` (`$NUVEL_MCP_PUBLIC_URL/mcp/k/<key>`) once; add
@@ -264,7 +276,9 @@ All are optional. Command-line flags, where they exist, take precedence.
 | `NUVEL_OAUTH_LOGIN` | GitHub login | `none` disables interactive login (operator-issued clients only). |
 | `NUVEL_OAUTH_GITHUB_CLIENT_ID`, `NUVEL_OAUTH_GITHUB_CLIENT_SECRET` | unset | GitHub OAuth app for the interactive login. |
 | `NUVEL_OAUTH_ALLOWED_USERS` | unset | Comma-separated GitHub users allowed to sign in. |
-| `NUVEL_OAUTH_REDIRECT_ALLOWLIST` | unset | Comma-separated extra redirect URIs accepted at registration. |
+| `NUVEL_OAUTH_REDIRECT_ALLOWLIST` | unset | Comma-separated extra redirect URIs accepted at registration (and in client metadata documents). |
+| `NUVEL_OAUTH_CIMD` | `1` | `0` stops accepting clients named by a Client ID Metadata Document URL. |
+| `NUVEL_OAUTH_CIMD_HOSTS` | unset | Comma-separated hosts whose metadata documents are accepted; unset accepts any public host. |
 | `NUVEL_OAUTH_DEV_LOGIN` | unset | `1` enables a local development login page (not for production). |
 | `NUVEL_MCP_ALLOWED_ORIGINS` | unset | Comma-separated extra `Origin` values the HTTP transport accepts. |
 | `NUVEL_MCP_TRUST_FORWARDED_FOR` | unset | `1` takes the caller's IP from `X-Forwarded-For` (only behind a proxy that appends it). |

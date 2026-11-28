@@ -433,18 +433,29 @@ domain of `folken2.github.io`, which we control. It changes if nuvel gets its ow
 
 The server remains both resource server and authorization server. For 2026-07-28:
 
-- Return `iss` in authorization responses (RFC 9207, SEP-2468).
-- Accept Client ID Metadata Documents (fetch the client's metadata from its `client_id`
-  URL, with the same fetch limits as the rest of the server), and keep dynamic
-  registration for older clients, since it is deprecated, not removed.
-- Honour `application_type` at registration (SEP-837), so native clients' loopback
-  redirects are accepted.
-- Declare `io.modelcontextprotocol/oauth-client-credentials` in discover. That grant
-  already exists.
+Checked against the 2026-07-28 authorization pages (authorization, client registration,
+security considerations) and the ext-auth client credentials extension:
+
+- `iss` in authorization responses (RFC 9207), advertised with
+  `authorization_response_iss_parameter_supported`: already done before this revision.
+- Client ID Metadata Documents (`cimd.py`): a `client_id` that is an https URL with a path
+  is fetched at `/authorize` and kept as a client record (`source: "cimd"`) for as long
+  as its `Cache-Control` allows (1 minute to 24 hours, 5 minutes by default). The fetch
+  is fenced as the spec's security considerations ask: https only, every resolved address
+  public and the connection pinned to the one checked, no redirects, 5 KB, a short
+  timeout, rate-limited like registration. The document must name its own URL, carry a
+  name and redirect URIs that are loopback, on the client's own host, or allow-listed,
+  and ask for a public client (`none`; `private_key_jwt` is not offered). The consent page
+  names the document's host and warns when the redirect comes back to this computer.
+  `NUVEL_OAUTH_CIMD=0` turns it off; `NUVEL_OAUTH_CIMD_HOSTS` is a trust list. Dynamic
+  registration stays, deprecated, not removed.
+- `application_type` (SEP-837) is a client duty; this server isn't OpenID Connect, so it
+  checks the value (`native` or `web`), keeps it and echoes it.
+- `io.modelcontextprotocol/oauth-client-credentials` is declared in `server/discover` when
+  HTTP runs with OAuth: the token endpoint already takes `client_secret_basic` and
+  `_post`, which is what the extension requires.
 - On the modern path, auth is per request. The principal comes from the token on each
   POST, as it does today after `initialize`.
-
-**verify**: the 2026-07-28 authorization pages, which this design was written without.
 
 ## 8. Telemetry and usage
 

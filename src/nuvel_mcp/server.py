@@ -594,6 +594,9 @@ class SkillsMCPServer:
         # Who may cache a modern list/read result: "private" (per
         # authorization context) unless a transport knows there is none.
         self.cache_scope = "private"
+        # Authorization extensions the transport serves (the HTTP transport
+        # with OAuth sets oauth-client-credentials); declared in server/discover.
+        self.auth_extensions: dict = {}
         # Seals requestState for multi round-trip requests (NUVEL_MCP_STATE_KEY,
         # else a per-process key).
         self.state_sealer = mrtr.StateSealer.from_env()
@@ -751,6 +754,8 @@ class SkillsMCPServer:
         extensions = {e.identifier: e.settings() for e in self.extensions}
         if modern and any(self._tool_enabled(t) for t in self.task_tools):
             extensions[self.tasks.identifier] = self.tasks.settings()  # 2026-07-28 only
+        if modern:
+            extensions.update(self.auth_extensions)
         if extensions:
             capabilities["extensions"] = extensions
         return capabilities

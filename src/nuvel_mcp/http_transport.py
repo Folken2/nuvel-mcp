@@ -1583,8 +1583,9 @@ class McpRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, OAuthProvider.protected_resource_metadata(self._origin()))
 
     def _get_as_metadata(self) -> None:
+        config = self.server.oauth.config
         self._send_json(HTTPStatus.OK, OAuthProvider.authorization_server_metadata(
-            self._origin(), self.server.oauth.config.login_mode))
+            self._origin(), config.login_mode, cimd_supported=config.cimd))
 
     def _post_register(self) -> None:
         body = self._read_body()
@@ -1729,6 +1730,10 @@ def make_server(mcp: SkillsMCPServer, host: str = DEFAULT_HOST, port: int = DEFA
     if no_auth:
         # One local caller and nothing in between: a list may be cached by anyone.
         mcp.cache_scope = "public"
+    else:
+        # The token endpoint takes client_credentials with client_secret_basic
+        # or _post: the OAuth Client Credentials extension (ext-auth).
+        mcp.auth_extensions = {"io.modelcontextprotocol/oauth-client-credentials": {}}
     if config.public_url and mcp.state_sealer.ephemeral:
         log("Warning: NUVEL_MCP_STATE_KEY is not set: multi round-trip requests are "
             "sealed with a per-process key, so a retry that reaches another replica, or "
