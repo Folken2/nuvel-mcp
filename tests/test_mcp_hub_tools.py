@@ -118,7 +118,7 @@ def test_tools_list_has_full_tool_set(server):
     resp = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     tools = {t["name"]: t for t in resp["result"]["tools"]}
     assert set(tools) == {
-        "search_skills", "list_skills", "list_themes", "browse_skills",
+        "search_skills", "list_skills", "list_themes", "browse_skills", "audit_hub",
         "get_skill", "install_skill", "propose_improvement",
         "fence_value", "record_feedback", "check_skill_health", "record_run_trace",
         "record_ui_event", "record_recipe_signal", "share_recipe",

@@ -17,7 +17,9 @@ PROTOCOL_VERSION = "MCP-Protocol-Version"
 METHOD = "Mcp-Method"
 NAME = "Mcp-Name"
 # The body param each name-bearing method mirrors into Mcp-Name.
-NAME_PARAMS = {"tools/call": "name", "prompts/get": "name", "resources/read": "uri"}
+NAME_PARAMS = {"tools/call": "name", "prompts/get": "name", "resources/read": "uri",
+               # The Tasks extension routes its methods by task id.
+               "tasks/get": "taskId", "tasks/update": "taskId", "tasks/cancel": "taskId"}
 _SENTINEL_START, _SENTINEL_END = "=?base64?", "?="
 
 

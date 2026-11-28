@@ -14,6 +14,22 @@ From here on the package is versioned and released on its own.
 
 ### Added
 
+- Tasks (`io.modelcontextprotocol/tasks`) for 2026-07-28 clients:
+  `tasks/get`, `tasks/update` and `tasks/cancel`, `notifications/tasks` through
+  `subscriptions/listen` (`taskIds`), and `Mcp-Name` routing by task id over
+  HTTP. Task tools become tasks only for clients that declare the extension.
+  Results are kept for `NUVEL_MCP_TASK_TTL` (default 24 hours), only for the
+  tenant that started them, never logged or relayed; records are owner-only
+  files under `<feedback-dir>/_tasks/` or the Postgres `tasks` table
+  (migration `0005_tasks`, row-level security forced). Tasks run on
+  `NUVEL_MCP_TASK_WORKERS` (default 4) in-process workers; one whose server
+  stopped reads as failed.
+- `audit_hub`: which hub skills the Skills extension publishes, and why the
+  rest aren't. Read scope, on by default over HTTP; runs as a task for
+  clients that declare Tasks.
+
+### Added
+
 - MCP Apps (`io.modelcontextprotocol/ui`) and the first view, the skill
   browser (`ui://nuvel-skills/skill-browser`): search the hub, read a skill,
   and send "Use the <name> skill." to the chat. A self-contained HTML file in

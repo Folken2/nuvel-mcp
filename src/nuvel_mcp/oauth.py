@@ -66,7 +66,7 @@ SCOPES = (SCOPE_READ, SCOPE_WRITE)
 # Tools that only read the hub. Everything else (the write tools, and any tool
 # this table doesn't know) needs skills:write.
 READ_TOOLS = frozenset({
-    "search_skills", "list_skills", "list_themes", "get_skill", "browse_skills",
+    "search_skills", "list_skills", "list_themes", "get_skill", "browse_skills", "audit_hub",
     "fence_value", "check_skill_health",
 })
 WRITE_TOOLS = frozenset({"install_skill", "propose_improvement", "record_feedback"})

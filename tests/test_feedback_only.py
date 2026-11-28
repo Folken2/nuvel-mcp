@@ -33,7 +33,7 @@ def test_constants():
     assert "search_skills" in HUB_TOOLS and not (HUB_TOOLS & FEEDBACK_TOOLS)
     assert HTTP_DEFAULT_TOOLS == {
         "search_skills", "list_skills", "list_themes", "get_skill", "fence_value",
-        "browse_skills", "record_run_trace", "record_ui_event", "check_skill_health", "record_recipe_signal",
+        "browse_skills", "audit_hub", "record_run_trace", "record_ui_event", "check_skill_health", "record_recipe_signal",
         "share_recipe",
     }
 

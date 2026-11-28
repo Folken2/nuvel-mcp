@@ -62,6 +62,7 @@ class Filter:
     prompts: bool = False
     resources_list: bool = False
     uris: tuple[str, ...] = ()
+    task_ids: tuple[str, ...] = ()  # the Tasks extension's addition
 
     def wire(self) -> dict:
         out: dict = {}
@@ -73,6 +74,8 @@ class Filter:
             out["resourcesListChanged"] = True
         if self.uris:
             out["resourceSubscriptions"] = list(self.uris)
+        if self.task_ids:
+            out["taskIds"] = list(self.task_ids)
         return out
 
 
@@ -87,7 +90,10 @@ def read_filter(params: dict) -> Filter:
     uris = value.get("resourceSubscriptions", [])
     if not isinstance(uris, list) or not all(isinstance(u, str) for u in uris):
         raise McpError(INVALID_PARAMS, "notifications.resourceSubscriptions must be a list of strings")
-    return Filter(tools=value.get("toolsListChanged", False),
+    task_ids = value.get("taskIds", [])
+    if not isinstance(task_ids, list) or not all(isinstance(t, str) for t in task_ids):
+        raise McpError(INVALID_PARAMS, "notifications.taskIds must be a list of strings")
+    return Filter(task_ids=tuple(dict.fromkeys(task_ids)), tools=value.get("toolsListChanged", False),
                   prompts=value.get("promptsListChanged", False),
                   resources_list=value.get("resourcesListChanged", False),
                   uris=tuple(dict.fromkeys(uris)))
@@ -103,7 +109,11 @@ def acknowledged(sub_id, honored: Filter) -> dict:
 
 
 def notification(sub_id, event: tuple) -> dict:
-    """The wire form of a broker event: ``("list",)`` or ``("updated", uri)``."""
+    """The wire form of a broker event: ``("list",)``, ``("updated", uri)`` or
+    ``("task", task_id, detailed_task)``."""
+    if event[0] == "task":
+        return {"jsonrpc": "2.0", "method": "notifications/tasks",
+                "params": {**event[2], "_meta": _meta(sub_id)}}
     if event[0] == "list":
         return {"jsonrpc": "2.0", "method": "notifications/resources/list_changed",
                 "params": {"_meta": _meta(sub_id)}}
@@ -125,6 +135,8 @@ class Subscription:
     outbox: queue.Queue = field(default_factory=queue.Queue)
     seen_list: Hashable = None
     seen: dict = field(default_factory=dict)
+    tenant: object = None  # whose tasks it may hear about
+    seen_tasks: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -136,6 +148,11 @@ class Listen:
     ack: dict
 
 
+def _task_mark(task: dict | None):
+    """What makes a task's state new: its status and when it last changed."""
+    return None if task is None else (task.get("status"), task.get("lastUpdatedAt"))
+
+
 class Broker:
     """Open subscriptions and the poller that feeds them.
 
@@ -145,9 +162,12 @@ class Broker:
     """
 
     def __init__(self, list_probe: Callable[[], Hashable],
-                 uri_probe: Callable[[str], Hashable], interval: float = DEFAULT_INTERVAL):
+                 uri_probe: Callable[[str], Hashable], interval: float = DEFAULT_INTERVAL,
+                 task_probe: Callable[[str, object], dict | None] | None = None):
         self.list_probe = list_probe
         self.uri_probe = uri_probe
+        # task_probe(task_id, tenant) -> the DetailedTask, or None.
+        self.task_probe = task_probe or (lambda task_id, tenant: None)
         self.interval = interval
         self._subs: list[Subscription] = []
         self._lock = threading.Lock()
@@ -163,12 +183,14 @@ class Broker:
             _log(f"subscriptions: probe failed: {type(exc).__name__}")
             return None
 
-    def open(self, sub_id, honored: Filter) -> Subscription:
+    def open(self, sub_id, honored: Filter, tenant=None) -> Subscription:
         """Start a subscription; what it sees now is its baseline."""
-        sub = Subscription(sub_id, honored)
+        sub = Subscription(sub_id, honored, tenant=tenant)
         if honored.resources_list:
             sub.seen_list = self._safe(self.list_probe)
         sub.seen = {uri: self._safe(self.uri_probe, uri) for uri in honored.uris}
+        sub.seen_tasks = {t: _task_mark(self._safe(self.task_probe, t, tenant))
+                          for t in honored.task_ids}
         with self._lock:
             self._subs.append(sub)
             if self._thread is None:
@@ -189,6 +211,10 @@ class Broker:
             subs, self._subs = self._subs, []
         for sub in subs:
             sub.outbox.put(CLOSED)
+
+    def poke(self) -> None:
+        """Poll now rather than at the next interval (a task just finished)."""
+        self._wake.set()
 
     def __len__(self) -> int:
         with self._lock:
@@ -216,6 +242,12 @@ class Broker:
                 if cache[uri] != sub.seen.get(uri):
                     sub.seen[uri] = cache[uri]
                     sub.outbox.put(("updated", uri))
+            for task_id in sub.honored.task_ids:
+                task = self._safe(self.task_probe, task_id, sub.tenant)
+                mark = _task_mark(task)
+                if task is not None and mark != sub.seen_tasks.get(task_id):
+                    sub.seen_tasks[task_id] = mark
+                    sub.outbox.put(("task", task_id, task))
 
     def _run(self) -> None:
         while True:
