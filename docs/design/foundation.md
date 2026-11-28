@@ -346,16 +346,19 @@ render them, among others.
 Tasks (SEP-2663) moved out of core into an extension. They are how a call outlives its
 HTTP request, and so how a background agent is reached.
 
-- **When.** A tool that may run long is registered with `task: "optional"` or
-  `"required"` (our flag, not a wire field). When the client has declared the extension
-  on the request, the kernel answers `tools/call` with `resultType: "task"`: `taskId`,
-  `status: "working"`, `ttlMs` and `pollIntervalMs`. When the client hasn't, an optional
-  task runs in the request, and a required one gets `-32021`. The server never returns a
-  task to a client that didn't declare the extension.
+- **When.** A tool that may run long is listed in `TASK_TOOLS` (today `audit_hub`). When
+  the client has declared the extension on the request, the kernel answers `tools/call`
+  with `resultType: "task"`: `taskId`, `status: "working"`, `ttlMs` and `pollIntervalMs`.
+  When the client hasn't, the tool runs in the request: no tool here requires a task, so
+  nothing gets `-32021` for it. The server never returns a task to a client that didn't
+  declare the extension, and never on a 2025-11-25 session (whose experimental tasks were
+  a different design). Built: `extensions/tasks.py`, `tasks/store.py`, `tasks/runner.py`.
 - **Methods.**
   - `tasks/get` returns the status and, once finished, `result` or `error`.
   - `tasks/update` delivers `inputResponses` when the status is `input_required`, using
-    the same `inputRequests` shape as MRTR.
+    the same `inputRequests` shape as MRTR. No task tool asks for input yet, so no
+    response is ever outstanding and an update is acknowledged and ignored, as the
+    extension asks for keys that aren't outstanding.
   - `tasks/cancel` cancels.
   - Over HTTP, `Mcp-Name` carries the `taskId`.
   - Status changes also go out as `notifications/tasks` on `subscriptions/listen`.
@@ -369,10 +372,15 @@ HTTP request, and so how a background agent is reached.
   tenant's id get the same `-32602`.
 - **Content.** A task's result is the tool's output and is returned to its owner only.
   It is not telemetry, so the content-free rule for traces doesn't apply to it. It is
-  kept only until `ttlMs` (default 24 hours) and then deleted. It is never logged, and
-  never relayed to `NUVEL_FEEDBACK_URL`. **verify** with you: this is the first store
-  that holds user content, so it is the "design change" AGENTS.md says to stop and ask
-  about.
+  kept only until `ttlMs` (default 24 hours, `NUVEL_MCP_TASK_TTL`) and then deleted. It
+  is never logged, and never relayed to `NUVEL_FEEDBACK_URL`. Decided (asked, approved):
+  this is the one store of user content, and `AGENTS.md` now says so.
+- **A task its server lost.** Tasks run on in-process workers (`NUVEL_MCP_TASK_WORKERS`,
+  default 4) that refresh a heartbeat. A task still `working` whose runner is gone (this
+  process doesn't run it, or another one has been silent for three heartbeats) reads as
+  `failed` with "the task was interrupted", never as working forever. Finished tasks
+  survive a restart, from files or Postgres. Cancellation is cooperative: a queued task
+  never starts, and `audit_hub` checks between skills.
 
 ### 6.4 Executors and agents
 
@@ -464,9 +472,8 @@ apart from behaviour changes, as for the agent packages.
 
 ## 10. Open questions
 
-1. The task store holds user content (6.3). Is a 24-hour, owner-only, never-relayed
-   store acceptable, or should results stay in the agent runtime with only a status
-   here?
+1. ~~The task store holds user content (6.3).~~ Decided: stored 24 hours, owner only,
+   never logged or relayed.
 2. The plugin manifest: reuse the plugin repositories' `plugin.json` exactly, or define
    a nuvel-mcp manifest that points at it?
 3. Remove the 2024-11-05 transport after phase 2, as proposed, or keep it until a major

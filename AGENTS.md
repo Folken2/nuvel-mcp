@@ -43,6 +43,11 @@ Postgres suites. Run the suite before every commit.
   The usage log never stores IP addresses or tool arguments. Validation errors name a JSON
   pointer, never the offending value. A change that would store or echo user text is a
   design change: stop and ask.
+- **Task results are the one store of user content** (decided for phase 3): a task's
+  result is a tool's output, kept only until its TTL (`NUVEL_MCP_TASK_TTL`, 24 hours by
+  default), returned only to the tenant that created it (anyone else gets the same
+  `-32602` as an unknown id), never logged and never relayed. Task files are `0600`.
+  Keep it that way; widening any of it is a design change.
 - **Schemas are versioned files.** Each payload's shape is a JSON Schema in
   `src/nuvel_mcp/schemas/` (`<name>.v<N>.schema.json`), read by a small validator that
   refuses keywords it doesn't support. A breaking change is a new version, not an edit.

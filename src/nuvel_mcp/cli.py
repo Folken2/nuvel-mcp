@@ -314,7 +314,7 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
     usage = None
     if db is not None:
         from nuvel_mcp.db.stores import (
-            PostgresRecipeStore, PostgresTraceStore, PostgresUiEventStore,
+            PostgresRecipeStore, PostgresTaskStore, PostgresTraceStore, PostgresUiEventStore,
             PostgresUsageStore)
         from nuvel_mcp.usage import UsageRecorder
 
@@ -324,6 +324,7 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
             cleanup.callback(usage.close)  # LIFO: flushed before the pool closes
     else:
         PostgresRecipeStore = PostgresTraceStore = PostgresUiEventStore = None
+        PostgresTaskStore = None
     country_lookup, error = _country_lookup(usage)
     if error:
         print(f"Error: {error}", file=sys.stderr)
@@ -363,10 +364,11 @@ def _run_serve(args: argparse.Namespace, cleanup: ExitStack) -> int:
             trace_store=trace_store,
             recipe_store=recipe_store,
             ui_event_store=ui_event_store,
+            task_store=PostgresTaskStore(db) if PostgresTaskStore is not None else None,
             usage=usage,
             database=db,
         )
-    except ValueError as exc:  # NUVEL_MCP_STATE_KEY, NUVEL_MCP_WATCH_INTERVAL
+    except ValueError as exc:  # NUVEL_MCP_STATE_KEY, _WATCH_INTERVAL, _TASK_TTL, _TASK_WORKERS
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     server.country_lookup = country_lookup

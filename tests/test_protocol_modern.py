@@ -41,7 +41,8 @@ def test_discover_names_modern_versions_capabilities_and_identity(server):
     assert result["capabilities"] == {
         "resources": {"listChanged": True, "subscribe": True}, "tools": {},
         "extensions": {"io.modelcontextprotocol/skills": {"directoryRead": True},
-                       "io.modelcontextprotocol/ui": {}}}
+                       "io.modelcontextprotocol/ui": {},
+                       "io.modelcontextprotocol/tasks": {}}}
     assert result["_meta"][SERVER_INFO_KEY]["name"] == SERVER_INFO["name"]
     assert result["ttlMs"] > 0 and result["cacheScope"] == "private"
 

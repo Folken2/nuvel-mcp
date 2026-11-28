@@ -129,6 +129,27 @@ query or a skill. `check_skill_health` with `plugin: "nuvel-mcp"` and
 `--tools` and the browser records nothing. `record_ui_event` accepts
 `nuvel.ui_event/1` events unchanged.
 
+### Tasks
+
+The server declares Tasks (`io.modelcontextprotocol/tasks`) to 2026-07-28
+clients. A `tools/call` of `audit_hub` from a client that declares the
+extension on that request is answered with `resultType: "task"` and a task id;
+the client polls `tasks/get` (or listens with `subscriptions/listen` and
+`taskIds`) until it is `completed`, `failed` or `cancelled`, and may
+`tasks/cancel` it. Any other client gets the result directly. Over HTTP the
+task methods need `Mcp-Name` set to the task id.
+
+`audit_hub` (read scope, on by default over HTTP) reports which hub skills the
+Skills extension publishes and why the others aren't.
+
+A task's result is the tool's output, so it is kept only for the task's TTL
+(`NUVEL_MCP_TASK_TTL`, 24 hours by default), returned only to the caller that
+started it (anyone else gets "Task not found"), never logged and never relayed.
+Records live under `<feedback-dir>/_tasks/` (owner-only files) or, with a
+database, in the `tasks` table. Tasks run on `NUVEL_MCP_TASK_WORKERS` workers
+(default 4) in the server process; one still running when its server stops
+reads as failed afterwards.
+
 ### Change notifications
 
 `subscriptions/listen` (2026-07-28 requests only) opens a stream of change
@@ -236,6 +257,8 @@ All are optional. Command-line flags, where they exist, take precedence.
 | `NUVEL_MCP_OAUTH_STORE` | `~/.nuvel/oauth.json` | OAuth store file (without a database). |
 | `NUVEL_MCP_PUBLIC_URL` | unset | Public base URL of a remote HTTP server (OAuth resource and issuer). |
 | `NUVEL_MCP_ACCESS_TOKEN` | unset | Bearer token the stdio server checks with `--require-auth`. |
+| `NUVEL_MCP_TASK_TTL` | `86400` | Seconds a task and its result are kept (60 to 604800). |
+| `NUVEL_MCP_TASK_WORKERS` | `4` | Tasks run at once in one server process (1 to 64); the rest wait. |
 | `NUVEL_MCP_WATCH_INTERVAL` | `2` | Seconds between checks of the hub's files for `subscriptions/listen` streams (0.05 to 3600). |
 | `NUVEL_MCP_STATE_KEY` | random per process | Key(s) sealing the `requestState` of multi round-trip requests: 32 or more random bytes, base64; comma-separate several to rotate (the first signs, any opens). Set the same value on every replica. An invalid key stops the server. |
 | `NUVEL_OAUTH_LOGIN` | GitHub login | `none` disables interactive login (operator-issued clients only). |

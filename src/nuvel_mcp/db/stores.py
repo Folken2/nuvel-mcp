@@ -3,6 +3,7 @@
 - :class:`PostgresTraceStore` — :class:`nuvel_mcp.traces.TraceStore`
 - :class:`PostgresUiEventStore` — :class:`nuvel_mcp.ui_events.UiEventStore`
 - :class:`PostgresRecipeStore` — :class:`nuvel_mcp.recipes.RecipeStore`
+- :class:`PostgresTaskStore` — :class:`nuvel_mcp.tasks.store.TaskStore`
 - :class:`PostgresOAuthStore` — the ``reading()`` / ``transaction()`` contract of
   :class:`nuvel_mcp.oauth.OAuthStore`, so :class:`~nuvel_mcp.oauth.OAuthProvider`
   runs on it unchanged
@@ -23,6 +24,8 @@ from nuvel_mcp import traces
 from nuvel_mcp.db import Database, redact_dsn
 from nuvel_mcp.oauth import OAuthStoreError
 from nuvel_mcp.recipes import _PATH_ID_RE
+from nuvel_mcp.tasks.store import TASK_ID_RE
+from nuvel_mcp.tasks.store import merge as merge_task
 
 #: OAuth store table (as the provider names it) -> SQL table.
 OAUTH_TABLES = {
@@ -124,6 +127,55 @@ class PostgresUiEventStore:
         sql += " ORDER BY started_at, id"
         with self.db.connection() as conn:
             return [row[0] for row in conn.execute(sql, params)]
+
+
+class PostgresTaskStore:
+    """``tasks``: one row per task (:mod:`nuvel_mcp.tasks.store`), deleted once
+    expired. Updates lock the row, so concurrent writers on any replica merge
+    in turn."""
+
+    def __init__(self, db: Database):
+        self.db = db
+        self._table = db.table("tasks")
+
+    def create(self, record: dict) -> None:
+        with self.db.connection() as conn:
+            conn.execute(
+                f"INSERT INTO {self._table} (task_id, tenant, expires_at, record) "
+                "VALUES (%s, %s, to_timestamp(%s), %s)",
+                (record["task_id"], record.get("tenant"), record["expires_at"],
+                 self.db.jsonb(record)))
+
+    def get(self, task_id: str) -> dict | None:
+        if not TASK_ID_RE.fullmatch(task_id or ""):
+            return None
+        with self.db.connection() as conn:
+            row = conn.execute(f"SELECT record FROM {self._table} WHERE task_id = %s",
+                               (task_id,)).fetchone()
+        return row[0] if row else None
+
+    def update(self, task_id: str, fields: dict) -> dict | None:
+        if not TASK_ID_RE.fullmatch(task_id or ""):
+            return None
+        with self.db.connection() as conn, conn.transaction():
+            row = conn.execute(f"SELECT record FROM {self._table} WHERE task_id = %s FOR UPDATE",
+                               (task_id,)).fetchone()
+            if row is None:
+                return None
+            record = merge_task(row[0], fields)
+            conn.execute(f"UPDATE {self._table} SET record = %s, expires_at = to_timestamp(%s) "
+                         "WHERE task_id = %s",
+                         (self.db.jsonb(record), record["expires_at"], task_id))
+        return record
+
+    def delete(self, task_id: str) -> None:
+        with self.db.connection() as conn:
+            conn.execute(f"DELETE FROM {self._table} WHERE task_id = %s", (task_id,))
+
+    def purge(self, now: float) -> int:
+        with self.db.connection() as conn:
+            return conn.execute(f"DELETE FROM {self._table} WHERE expires_at <= to_timestamp(%s)",
+                                (now,)).rowcount
 
 
 class PostgresRecipeStore:

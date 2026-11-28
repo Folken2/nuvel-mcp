@@ -61,6 +61,7 @@ from nuvel_mcp import usage as usage_mod
 from nuvel_mcp.auth import current_principal
 from nuvel_mcp.extensions import apps as apps_ext
 from nuvel_mcp.extensions import skills as skills_ext
+from nuvel_mcp.extensions import tasks as tasks_ext
 from nuvel_mcp.installer import install_skill
 from nuvel_mcp.protocol import envelope, kernel, mrtr, subscriptions, versions
 from nuvel_mcp.protocol.errors import (  # noqa: F401 - re-exported for the transports
@@ -74,10 +75,13 @@ from nuvel_mcp.protocol.errors import (  # noqa: F401 - re-exported for the tran
     error_response,
 )
 from nuvel_mcp.skills_loader import SkillsError, SkillsLoader, parse_frontmatter
+from nuvel_mcp.tasks import runner as task_runner
+from nuvel_mcp.tasks.store import LocalTaskStore
 
 if TYPE_CHECKING:  # pragma: no cover
     from nuvel_mcp.db import Database
     from nuvel_mcp.recipes import RecipeStore
+    from nuvel_mcp.tasks.store import TaskStore
     from nuvel_mcp.traces import TraceStore
     from nuvel_mcp.ui_events import UiEventStore
     from nuvel_mcp.usage import UsageRecorder
@@ -139,7 +143,7 @@ def log(*args) -> None:
 
 HUB_TOOLS = frozenset({
     "search_skills", "list_skills", "list_themes", "get_skill", "install_skill", "fence_value",
-    "browse_skills",
+    "browse_skills", "audit_hub",
 })
 FEEDBACK_TOOLS = frozenset({
     "record_feedback", "check_skill_health", "propose_improvement", "record_run_trace",
@@ -152,10 +156,14 @@ FEEDBACK_TOOLS = frozenset({
 # install_skill (writes to the server's filesystem).
 HTTP_DEFAULT_TOOLS = frozenset({
     "search_skills", "list_skills", "list_themes", "get_skill", "fence_value", "browse_skills",
+    "audit_hub",
     "record_run_trace", "record_ui_event", "check_skill_health", "record_recipe_signal",
     "share_recipe",
 })
 _SEMVER = re.compile(r"\d+\.\d+\.\d+")
+# Tools that run as a task (io.modelcontextprotocol/tasks) for a client that
+# declared the extension; any other client gets their result directly.
+TASK_TOOLS = frozenset({"audit_hub"})
 # Tools whose result also goes out as structuredContent (the ones with a view).
 STRUCTURED_TOOLS = frozenset({"browse_skills"})
 RUN_OUTCOMES = ("success", "partial", "failure", "blocked", "skipped")
@@ -532,6 +540,7 @@ class SkillsMCPServer:
         trace_store: "TraceStore | None" = None,
         health_runs_only: bool = False,
         recipe_store: "RecipeStore | None" = None,
+        task_store: "TaskStore | None" = None,
         ui_event_store: "UiEventStore | None" = None,
         usage: "UsageRecorder | None" = None,
         database: "Database | None" = None,
@@ -553,6 +562,7 @@ class SkillsMCPServer:
         self._allowed_tools = tools
         self.trace_store = trace_store
         self.recipe_store = recipe_store
+        self.task_store = task_store
         self.ui_event_store = ui_event_store
         # Remote mode, set by the HTTP transport: no tool returns anything
         # read from the local feedback store (which holds free text and every
@@ -613,12 +623,20 @@ class SkillsMCPServer:
         # subscriptions/listen exists on the modern path only (_dispatch_modern
         # answers it); named here so usage events know it.
         self._methods[subscriptions.METHOD] = self._listen_legacy
+        # Tasks: tools in task_tools run on in-process workers for clients
+        # that declared the extension (NUVEL_MCP_TASK_WORKERS, NUVEL_MCP_TASK_TTL).
+        workers, ttl_s = task_runner.settings_from_env()
+        self.task_tools = set(TASK_TOOLS)
+        self.tasks = tasks_ext.TasksExtension(
+            self._task_store, task_runner.TaskRunner(self._task_store, workers), ttl_s)
+        self._methods.update(self.tasks.methods())
         self.subscriptions = subscriptions.Broker(
             self._list_fingerprint, self._resource_fingerprint,
-            subscriptions.interval_from_env())
+            subscriptions.interval_from_env(), task_probe=self.tasks.get)
         self._tools = {
             "search_skills": self.tool_search_skills,
             "browse_skills": self.tool_browse_skills,
+            "audit_hub": self.tool_audit_hub,
             "list_skills": self.tool_list_skills,
             "list_themes": self.tool_list_themes,
             "get_skill": self.tool_get_skill,
@@ -649,6 +667,12 @@ class SkillsMCPServer:
         if self.ui_event_store is not None:
             return self.ui_event_store
         return ui_events.LocalUiEventStore(self.feedback_dir)
+
+    def _task_store(self) -> "TaskStore":
+        """The configured task store, else files under ``feedback_dir``."""
+        if self.task_store is not None:
+            return self.task_store
+        return LocalTaskStore(self.feedback_dir)
 
     def _recipe_store(self) -> "RecipeStore":
         """The configured recipe store, else a local one under ``feedback_dir``."""
@@ -724,8 +748,11 @@ class SkillsMCPServer:
         resources = ({"listChanged": True, "subscribe": True}
                      if modern and self.loader is not None else {})
         capabilities: dict = {"resources": resources, "tools": {}}
-        if self.extensions:
-            capabilities["extensions"] = {e.identifier: e.settings() for e in self.extensions}
+        extensions = {e.identifier: e.settings() for e in self.extensions}
+        if modern and any(self._tool_enabled(t) for t in self.task_tools):
+            extensions[self.tasks.identifier] = self.tasks.settings()  # 2026-07-28 only
+        if extensions:
+            capabilities["extensions"] = extensions
         return capabilities
 
     def handle_initialize(self, params):
@@ -752,17 +779,24 @@ class SkillsMCPServer:
         return self.skills.fingerprint(uri) if self.loader is not None else None
 
     def _honor(self, requested: subscriptions.Filter) -> subscriptions.Filter:
-        """What this server can report: the resource list and skill files.
-        Tools and prompts never change while it runs, so they are not promised."""
+        """What this server can report: the resource list, skill files, and
+        the caller's own tasks. Tools and prompts never change while it runs,
+        so they are not promised."""
+        tenant = current_principal.get()
+        task_ids = tuple(t for t in requested.task_ids
+                         if self.tasks.get(t, tenant) is not None)[:subscriptions.MAX_URIS]
         if self.loader is None:
-            return subscriptions.Filter()
+            return subscriptions.Filter(task_ids=task_ids)
         uris = tuple(u for u in requested.uris if self.skills.watchable(u))
         return subscriptions.Filter(resources_list=requested.resources_list,
-                                    uris=uris[:subscriptions.MAX_URIS])
+                                    uris=uris[:subscriptions.MAX_URIS], task_ids=task_ids)
 
-    def _open_listen(self, msg_id, params):
-        honored = self._honor(subscriptions.read_filter(params))
-        sub = self.subscriptions.open(msg_id, honored)
+    def _open_listen(self, msg_id, params, context):
+        requested = subscriptions.read_filter(params)
+        if requested.task_ids and not tasks_ext.declared(context):
+            raise tasks_ext.required()
+        honored = self._honor(requested)
+        sub = self.subscriptions.open(msg_id, honored, tenant=current_principal.get())
         return subscriptions.Listen(sub, subscriptions.acknowledged(msg_id, honored))
 
     def enable_remote_mode(self) -> None:
@@ -897,6 +931,25 @@ class SkillsMCPServer:
                                 "description": "Number of items to skip (default 0).",
                                 "default": 0,
                                 "minimum": 0,
+                            },
+                        },
+                    },
+                },
+                {
+                    "name": "audit_hub",
+                    "description": (
+                        "Check every skill in the hub against the MCP Skills extension's "
+                        "rules (frontmatter, name, description, file limits) and report "
+                        "which ones it publishes and, for the rest, why not. Use it to find "
+                        "skills that skills/list leaves out. It reads every file, so on a "
+                        "large hub it may run as a task (io.modelcontextprotocol/tasks)."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "theme": {
+                                "type": "string",
+                                "description": "Only this theme (see list_themes).",
                             },
                         },
                     },
@@ -1390,6 +1443,26 @@ class SkillsMCPServer:
             "total": len(hits),
             "results": results,
         }
+
+    def tool_audit_hub(self, args):
+        """Which hub skills the Skills extension publishes, and why the rest aren't."""
+        theme = _optional_str_arg(args, "theme")
+        skills, published = [], 0
+        for t, entry in self._entries_for(theme):
+            if task_runner.cancelled():
+                raise task_runner.TaskCancelled()
+            name = entry.get("name")
+            item = {"theme": t, "name": name if isinstance(name, str) else ""}
+            try:
+                self.skills.entry(t, entry)
+                item["published"] = True
+                published += 1
+            except skills_ext.Unservable as exc:
+                item.update(published=False, reason=str(exc))
+            except (SkillsError, OSError):  # their text can carry server paths
+                item.update(published=False, reason="its files could not be read")
+            skills.append(item)
+        return {"total": len(skills), "published": published, "skills": skills}
 
     def tool_browse_skills(self, args):
         """The skill browser's data: search matches, or the catalog's first 50."""
@@ -2022,12 +2095,17 @@ class SkillsMCPServer:
                 raise McpError(METHOD_NOT_FOUND, "Method not found")
             context = self._open_round(method, params, context)
             if method == subscriptions.METHOD:
-                return self._open_listen(msg_id, params)
+                return self._open_listen(msg_id, params, context)
         except McpError as exc:
             return error_response(msg_id, exc.code, exc.message, exc.data)
         reset = envelope.current_request.set(context)
         try:
-            result = self._call(method, handler, params)
+            if self._runs_as_task(method, params, context):
+                result = self.tasks.create(
+                    params["name"], lambda: self._call(method, self.handle_tools_call, params),
+                    on_done=lambda task_id: self.subscriptions.poke())
+            else:
+                result = self._call(method, handler, params)
         except McpError as exc:
             return error_response(msg_id, exc.code, exc.message, exc.data)
         except mrtr.InputRequired as needed:
@@ -2039,6 +2117,12 @@ class SkillsMCPServer:
             envelope.current_request.reset(reset)
         result = kernel.finish(method, result, SERVER_INFO, self.cache_scope)
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    def _runs_as_task(self, method, params, context) -> bool:
+        """A task tool, called by a client that declared Tasks on this request."""
+        name = params.get("name") if method == "tools/call" else None
+        return (name in self.task_tools and name in self._tools and self._tool_enabled(name)
+                and tasks_ext.declared(context))
 
     def _open_round(self, method, params, context):
         """On the retry of a multi round-trip request, verify its requestState
@@ -2078,7 +2162,7 @@ class SkillsMCPServer:
         except McpError as exc:
             log(f"McpError in {method}: {exc.message}")
             raise
-        except mrtr.InputRequired:
+        except (mrtr.InputRequired, task_runner.TaskCancelled):
             raise
         except SkillsError as exc:
             log(f"SkillsError in {method}: {exc}")
