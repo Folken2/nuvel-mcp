@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from nuvel_mcp import server as server_mod
+from nuvel_mcp import ui_events
 from nuvel_mcp.auth import current_principal
 from nuvel_mcp.server import FEEDBACK_TOOLS, HTTP_DEFAULT_TOOLS, SkillsMCPServer
 from nuvel_mcp.ui_events import LocalUiEventStore, validate_ui_event
@@ -45,9 +46,12 @@ def test_listed_and_exposed_over_http(tmp_path):
     tool = {t["name"]: t for t in s.handle_tools_list({})["tools"]}["record_ui_event"]
     assert "user content" in tool["description"] and "duplicate" in tool["description"]
     assert tool["inputSchema"]["required"] == ["event"]
-    event_schema = tool["inputSchema"]["properties"]["event"]
-    assert event_schema["additionalProperties"] is False
-    assert "first_action_s" not in event_schema["required"]
+    versions = tool["inputSchema"]["properties"]["event"]["oneOf"]
+    assert [v["properties"]["schema"]["const"] for v in versions] == [
+        "nuvel.ui_event/1", "nuvel.ui_event/2"]
+    for event_schema in versions:
+        assert event_schema["additionalProperties"] is False
+        assert "first_action_s" not in event_schema["required"]
 
 
 def test_records_valid_event(tmp_path, example):
@@ -225,3 +229,39 @@ def test_local_store_files_by_surface(tmp_path, example):
     assert store.query("chief-of-staff", "dashboard", since, None) == [record]
     assert store.query("chief-of-staff", "radar", since, None) == []
     assert (tmp_path / DAY_FILE).is_file()
+
+
+# --- nuvel.ui_event/2: the server's own views --------------------------------------
+
+def _browser_visit(example, **changes):
+    event = {**example, "schema": "nuvel.ui_event/2", "surface": "skill-browser",
+             "plugin": {"name": "nuvel-mcp", "version": "0.7.0"},
+             "events": {"search": 2, "open_skill": 1}}
+    event.update(changes)
+    return event
+
+
+def test_version_1_events_stay_valid_as_version_1(example):
+    assert ui_events.validate_ui_event(example) == []
+    # A v1 event cannot name a surface only v2 knows.
+    assert ui_events.validate_ui_event({**example, "surface": "skill-browser"}) == ["/surface"]
+
+
+def test_a_skill_browser_visit_is_recorded(tmp_path, example):
+    s = SkillsMCPServer(None, feedback_dir=tmp_path)
+    res, body = call(s, _browser_visit(example))
+    assert res["isError"] is False and body["status"] == "recorded"
+    assert (tmp_path / "_ui_events" / "nuvel-mcp.skill-browser").is_dir()
+
+
+@pytest.mark.parametrize("changes, path", [
+    ({"plugin": {"name": "chief-of-staff", "version": "0.7.0"}}, "/plugin/name"),
+    ({"events": {"search": 1, "view.today": 1}}, "/events/*"),
+    ({"schema": "nuvel.ui_event/3"}, "/schema"),
+])
+def test_the_server_owns_its_surfaces_catalogue(example, changes, path):
+    assert path in ui_events.validate_ui_event(_browser_visit(example, **changes))
+
+
+def test_surfaces_span_every_version():
+    assert ui_events.surfaces() == {"dashboard", "skill-browser"}

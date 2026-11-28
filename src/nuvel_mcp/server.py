@@ -17,6 +17,7 @@ Resources:
 
 Tools:
     search_skills        Ranked multi-word search over metadata (and optionally bodies).
+    browse_skills        Opens the skill browser view (MCP Apps); the same matches as data.
     list_skills          Browse skills, optionally by theme, with pagination.
     list_themes          List themes with their skill counts and names.
     get_skill            Fetch a skill's full content + metadata by name, or a
@@ -58,6 +59,7 @@ from typing import IO, TYPE_CHECKING
 from nuvel_mcp import feedback, masking, recipes, traces, ui_events
 from nuvel_mcp import usage as usage_mod
 from nuvel_mcp.auth import current_principal
+from nuvel_mcp.extensions import apps as apps_ext
 from nuvel_mcp.extensions import skills as skills_ext
 from nuvel_mcp.installer import install_skill
 from nuvel_mcp.protocol import envelope, kernel, mrtr, subscriptions, versions
@@ -137,6 +139,7 @@ def log(*args) -> None:
 
 HUB_TOOLS = frozenset({
     "search_skills", "list_skills", "list_themes", "get_skill", "install_skill", "fence_value",
+    "browse_skills",
 })
 FEEDBACK_TOOLS = frozenset({
     "record_feedback", "check_skill_health", "propose_improvement", "record_run_trace",
@@ -148,10 +151,13 @@ FEEDBACK_TOOLS = frozenset({
 # Off unless named: record_feedback / propose_improvement (free-text input) and
 # install_skill (writes to the server's filesystem).
 HTTP_DEFAULT_TOOLS = frozenset({
-    "search_skills", "list_skills", "list_themes", "get_skill", "fence_value",
+    "search_skills", "list_skills", "list_themes", "get_skill", "fence_value", "browse_skills",
     "record_run_trace", "record_ui_event", "check_skill_health", "record_recipe_signal",
     "share_recipe",
 })
+_SEMVER = re.compile(r"\d+\.\d+\.\d+")
+# Tools whose result also goes out as structuredContent (the ones with a view).
+STRUCTURED_TOOLS = frozenset({"browse_skills"})
 RUN_OUTCOMES = ("success", "partial", "failure", "blocked", "skipped")
 
 
@@ -600,7 +606,8 @@ class SkillsMCPServer:
         self.extensions = []
         if loader is not None:
             self.skills = skills_ext.SkillsExtension(loader, self._scoped_entries)
-            self.extensions.append(self.skills)
+            self.apps = apps_ext.AppsExtension()
+            self.extensions += [self.skills, self.apps]
         for extension in self.extensions:
             self._methods.update(extension.methods())
         # subscriptions/listen exists on the modern path only (_dispatch_modern
@@ -611,6 +618,7 @@ class SkillsMCPServer:
             subscriptions.interval_from_env())
         self._tools = {
             "search_skills": self.tool_search_skills,
+            "browse_skills": self.tool_browse_skills,
             "list_skills": self.tool_list_skills,
             "list_themes": self.tool_list_themes,
             "get_skill": self.tool_get_skill,
@@ -775,12 +783,16 @@ class SkillsMCPServer:
     def handle_resources_list(self, params):
         if self.loader is None:
             return {"resources": []}
+        # Views are found through their tools' _meta.ui, as the Apps extension
+        # allows: this list stays the skills.
         return {"resources": self.skills.resource_list()}
 
     def handle_resources_read(self, params):
         uri = params.get("uri")
         if not uri:
             raise McpError(INVALID_PARAMS, "Missing required param 'uri'")
+        if self.loader is not None and isinstance(uri, str) and uri.startswith(apps_ext.SCHEME):
+            return self.apps.read(uri)
         segments = skills_ext.parse_uri(uri)
         if self.loader is not None and segments is not None and len(segments) >= 3:
             # skill://<theme>/<name>/<file>: any file of the skill.
@@ -888,6 +900,30 @@ class SkillsMCPServer:
                             },
                         },
                     },
+                },
+                {
+                    "name": "browse_skills",
+                    "description": (
+                        "Open the skill browser: an interactive view where the user can "
+                        "search the hub and read skills. Use it when the user wants to look "
+                        "through the available skills themselves. Without an MCP Apps host "
+                        "it returns the same matches as data (up to 50), like search_skills "
+                        "with a query or list_skills without one."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Words to search for; omit to list every skill.",
+                            },
+                            "theme": {
+                                "type": "string",
+                                "description": "Only this theme (see list_themes).",
+                            },
+                        },
+                    },
+                    "_meta": apps_ext.tool_meta(apps_ext.SKILL_BROWSER),
                 },
                 {
                     "name": "list_themes",
@@ -1156,7 +1192,8 @@ class SkillsMCPServer:
                     "name": "record_ui_event",
                     "description": (
                         "Record one page visit on a plugin surface (the "
-                        "dashboard) as a content-free nuvel.ui_event/1 event, "
+                        "dashboard) or one of this server's views (the skill "
+                        "browser) as a content-free nuvel.ui_event/1 or /2 event, "
                         "once per visit, when the page tells you to. Every field "
                         "is an enum, a UUID, a version, a timestamp, a count or "
                         "a short lowercase identifier. 'events' maps event ids "
@@ -1171,9 +1208,12 @@ class SkillsMCPServer:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "event": self._doc_input_schema(
-                                ui_events.SCHEMA_RESOURCE, "One nuvel.ui_event/1 page visit object."
-                            )
+                            "event": {
+                                "description": "One nuvel.ui_event page visit object, "
+                                               "version 1 or 2.",
+                                "oneOf": [self._doc_input_schema(resource, name)
+                                          for name, resource in ui_events.SCHEMAS.items()],
+                            }
                         },
                         "required": ["event"],
                     },
@@ -1273,14 +1313,18 @@ class SkillsMCPServer:
                 }],
                 "isError": True,
             }
-        # MCP tool results wrap output as a list of content blocks.
-        return {
+        # MCP tool results wrap output as a list of content blocks; a tool
+        # with a view also returns the same data as structuredContent.
+        response = {
             "content": [{
                 "type": "text",
                 "text": json.dumps(result, ensure_ascii=False),
             }],
             "isError": False,
         }
+        if tool_name in STRUCTURED_TOOLS:
+            response["structuredContent"] = result
+        return response
 
     # --- Tools ---------------------------------------------------------------
 
@@ -1346,6 +1390,31 @@ class SkillsMCPServer:
             "total": len(hits),
             "results": results,
         }
+
+    def tool_browse_skills(self, args):
+        """The skill browser's data: search matches, or the catalog's first 50."""
+        query = _optional_str_arg(args, "query") or ""
+        theme = _optional_str_arg(args, "theme")
+        scope = {"theme": theme} if theme else {}
+        if query.strip():
+            found = self.tool_search_skills({"query": query, "limit": 50, **scope})
+            skills, total = found["results"], found["total"]
+        else:
+            found = self.tool_list_skills({"limit": 50, **scope})
+            skills, total = found["items"], found["total"]
+        return {"query": query, "count": len(skills), "total": total, "skills": skills,
+                "visits": self._visit_settings()}
+
+    def _visit_settings(self) -> dict:
+        """Whether the skill browser should record its visit, and as what.
+        Only when record_ui_event is offered here and the server has a
+        release version (a bare source tree has none)."""
+        record = self._tool_enabled("record_ui_event") and _SEMVER.fullmatch(SERVER_INFO["version"])
+        settings: dict = {"record": bool(record)}
+        if record:
+            settings["schema"] = ui_events.SCHEMA_ID
+            settings["plugin"] = {"name": ui_events.SERVER_PLUGIN, "version": SERVER_INFO["version"]}
+        return settings
 
     def tool_list_skills(self, args):
         theme = _optional_str_arg(args, "theme")

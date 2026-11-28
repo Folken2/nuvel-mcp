@@ -107,6 +107,28 @@ naming rules, it has a `description`, and it has at most 512 files and 16 MiB.
 The server log names any skill left out and why. The hub tools
 (`search_skills`, `get_skill`, ...) are unchanged.
 
+### MCP Apps: the skill browser
+
+The server declares MCP Apps (`io.modelcontextprotocol/ui`). The
+`browse_skills` tool (on by default over HTTP, read scope) opens the skill
+browser, an interactive view at `ui://nuvel-skills/skill-browser`
+(`text/html;profile=mcp-app`, linked through the tool's
+`_meta.ui.resourceUri`): the user searches the hub, reads a skill and can send
+"Use the <name> skill." to the chat. The view calls `browse_skills` and
+`get_skill` through the host and needs no network, so it declares no CSP and
+gets the hosts' restrictive default. A host without MCP Apps gets the same
+data as the tool's result: up to 50 matches (or the catalog without a query),
+as text and `structuredContent`. Views are not listed by `resources/list`.
+
+When `record_ui_event` is offered (the default) the browser records one
+content-free visit as `nuvel.ui_event/2`, sent when the host closes the view:
+plugin `nuvel-mcp` at the server's version, surface `skill-browser`, and how
+often each of `search`, `open_skill`, `use_skill` and `back` happened, never a
+query or a skill. `check_skill_health` with `plugin: "nuvel-mcp"` and
+`skill_name: "skill-browser"` reports them. Leave `record_ui_event` out of
+`--tools` and the browser records nothing. `record_ui_event` accepts
+`nuvel.ui_event/1` events unchanged.
+
 ### Change notifications
 
 `subscriptions/listen` (2026-07-28 requests only) opens a stream of change
@@ -257,7 +279,10 @@ The Postgres tests run when `NUVEL_MCP_TEST_DATABASE_URL` points at a
 throwaway database (and the `postgres` extra is installed); otherwise they are
 skipped. `pip install -e ".[test,conformance]"` adds the official MCP SDK, and
 `tests/test_conformance_sdk.py` then drives the server with its client in both
-protocol eras, over stdio and HTTP. CI (`.github/workflows/tests.yml`) runs the suite on Python 3.11–3.13,
+protocol eras, over stdio and HTTP. With Node and Playwright installed,
+`tests/test_apps_view.py` also runs the skill browser in Chromium through a
+minimal Apps host (`tests/apps_host.js`); set `NUVEL_MCP_SCREENSHOT_DIR` to keep
+its screenshots. CI (`.github/workflows/tests.yml`) runs the suite on Python 3.11–3.13,
 a clean-install smoke test and the Postgres suites. The recorded clean-install
 and CI results are in [docs/verification.md](docs/verification.md).
 

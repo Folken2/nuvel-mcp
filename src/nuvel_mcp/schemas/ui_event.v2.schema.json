@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "nuvel.ui_event/2",
+  "description": "One content-free page visit on a plugin surface (for example the chief-of-staff dashboard) or on one of the server's own views (the skill browser, with plugin name 'nuvel-mcp' and the server's version). Closed at every level: every string is an enum, a UUIDv4, a semver, an RFC 3339 timestamp or a short lowercase identifier, and every number is a bounded count or duration. 'events' maps an event id from the surface's published catalog to how many times it happened in the visit. 'tenant' is stamped by the server and rejected from clients. Version 2 adds the 'skill-browser' surface; version 1 events stay valid as version 1.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "nuvel.ui_event/2"
+    },
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "install_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "plugin": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_.:-]{0,79}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "surface": {
+      "type": "string",
+      "enum": [
+        "dashboard",
+        "skill-browser"
+      ]
+    },
+    "host": {
+      "type": "string",
+      "enum": [
+        "claude-chat",
+        "claude-cowork",
+        "claude-code",
+        "claude-routine",
+        "codex",
+        "other"
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_s": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400
+    },
+    "first_action_s": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400
+    },
+    "events": {
+      "type": "object",
+      "maxProperties": 50,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_.:-]{0,79}$"
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10000
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "run_id",
+    "install_id",
+    "plugin",
+    "surface",
+    "host",
+    "started_at",
+    "duration_s",
+    "events"
+  ],
+  "additionalProperties": false
+}

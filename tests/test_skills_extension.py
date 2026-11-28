@@ -92,7 +92,7 @@ def file_bytes(content: dict) -> bytes:
 
 def test_discover_declares_the_extension_with_directory_reads(server):
     caps = result(server, "server/discover")["capabilities"]
-    assert caps["extensions"] == {"io.modelcontextprotocol/skills": {"directoryRead": True}}
+    assert caps["extensions"]["io.modelcontextprotocol/skills"] == {"directoryRead": True}
     assert "resources" in caps  # required alongside the extension
 
 
