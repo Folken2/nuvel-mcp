@@ -53,7 +53,10 @@ function hostPage(viewHtml) {
 <iframe id="view" sandbox="allow-scripts" style="border:0;width:100%;height:100vh"
   srcdoc="${srcdoc}"></iframe>
 <script>
-  window.log = { methods: [], violations: [], messages: [], sizes: [] };
+  window.log = { methods: [], violations: [], messages: [], sizes: [], toolCalls: [],
+                 tornDown: false };
+  window.teardown = () => frame.contentWindow.postMessage(
+    { jsonrpc: "2.0", id: 9000, method: "ui/resource-teardown", params: { reason: "test" } }, "*");
   const frame = document.getElementById("view");
   const toView = (m) => frame.contentWindow.postMessage(m, "*");
   window.addEventListener("message", async (event) => {
@@ -62,6 +65,7 @@ function hostPage(viewHtml) {
     if (m && m.cspViolation) { log.violations.push(m.cspViolation); return; }
     if (!m || m.jsonrpc !== "2.0") return;
     log.methods.push(m.method || "response");
+    if (m.id === 9000 && !m.method) { log.tornDown = true; return; }
     if (m.method === "ui/initialize") {
       toView({ jsonrpc: "2.0", id: m.id, result: {
         protocolVersion: "2026-01-26",
@@ -76,6 +80,7 @@ function hostPage(viewHtml) {
       const reply = await callServer("tools/call", { name: "browse_skills", arguments: args });
       toView({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: reply.result });
     } else if (m.method === "tools/call") {
+      log.toolCalls.push(m.params.name);
       const reply = await callServer("tools/call", m.params);
       toView({ jsonrpc: "2.0", id: m.id, ...(reply.error ? { error: reply.error } : { result: reply.result }) });
     } else if (m.method === "ui/message") {
@@ -116,6 +121,9 @@ function hostPage(viewHtml) {
 
       await view.locator("#use").click();
       await page.waitForFunction(() => window.log.messages.length > 0);
+      // The host tears the view down; the view answers once its visit is sent.
+      await page.evaluate(() => window.teardown());
+      await page.waitForFunction(() => window.log.tornDown);
       r.log = await page.evaluate(() => window.log);
       await page.close();
     }

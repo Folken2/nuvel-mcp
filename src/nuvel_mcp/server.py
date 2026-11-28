@@ -155,6 +155,7 @@ HTTP_DEFAULT_TOOLS = frozenset({
     "record_run_trace", "record_ui_event", "check_skill_health", "record_recipe_signal",
     "share_recipe",
 })
+_SEMVER = re.compile(r"\d+\.\d+\.\d+")
 # Tools whose result also goes out as structuredContent (the ones with a view).
 STRUCTURED_TOOLS = frozenset({"browse_skills"})
 RUN_OUTCOMES = ("success", "partial", "failure", "blocked", "skipped")
@@ -1191,7 +1192,8 @@ class SkillsMCPServer:
                     "name": "record_ui_event",
                     "description": (
                         "Record one page visit on a plugin surface (the "
-                        "dashboard) as a content-free nuvel.ui_event/1 event, "
+                        "dashboard) or one of this server's views (the skill "
+                        "browser) as a content-free nuvel.ui_event/1 or /2 event, "
                         "once per visit, when the page tells you to. Every field "
                         "is an enum, a UUID, a version, a timestamp, a count or "
                         "a short lowercase identifier. 'events' maps event ids "
@@ -1206,9 +1208,12 @@ class SkillsMCPServer:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "event": self._doc_input_schema(
-                                ui_events.SCHEMA_RESOURCE, "One nuvel.ui_event/1 page visit object."
-                            )
+                            "event": {
+                                "description": "One nuvel.ui_event page visit object, "
+                                               "version 1 or 2.",
+                                "oneOf": [self._doc_input_schema(resource, name)
+                                          for name, resource in ui_events.SCHEMAS.items()],
+                            }
                         },
                         "required": ["event"],
                     },
@@ -1397,7 +1402,19 @@ class SkillsMCPServer:
         else:
             found = self.tool_list_skills({"limit": 50, **scope})
             skills, total = found["items"], found["total"]
-        return {"query": query, "count": len(skills), "total": total, "skills": skills}
+        return {"query": query, "count": len(skills), "total": total, "skills": skills,
+                "visits": self._visit_settings()}
+
+    def _visit_settings(self) -> dict:
+        """Whether the skill browser should record its visit, and as what.
+        Only when record_ui_event is offered here and the server has a
+        release version (a bare source tree has none)."""
+        record = self._tool_enabled("record_ui_event") and _SEMVER.fullmatch(SERVER_INFO["version"])
+        settings: dict = {"record": bool(record)}
+        if record:
+            settings["schema"] = ui_events.SCHEMA_ID
+            settings["plugin"] = {"name": ui_events.SERVER_PLUGIN, "version": SERVER_INFO["version"]}
+        return settings
 
     def tool_list_skills(self, args):
         theme = _optional_str_arg(args, "theme")

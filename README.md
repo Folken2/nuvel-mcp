@@ -120,6 +120,15 @@ gets the hosts' restrictive default. A host without MCP Apps gets the same
 data as the tool's result: up to 50 matches (or the catalog without a query),
 as text and `structuredContent`. Views are not listed by `resources/list`.
 
+When `record_ui_event` is offered (the default) the browser records one
+content-free visit as `nuvel.ui_event/2`, sent when the host closes the view:
+plugin `nuvel-mcp` at the server's version, surface `skill-browser`, and how
+often each of `search`, `open_skill`, `use_skill` and `back` happened, never a
+query or a skill. `check_skill_health` with `plugin: "nuvel-mcp"` and
+`skill_name: "skill-browser"` reports them. Leave `record_ui_event` out of
+`--tools` and the browser records nothing. `record_ui_event` accepts
+`nuvel.ui_event/1` events unchanged.
+
 ### Change notifications
 
 `subscriptions/listen` (2026-07-28 requests only) opens a stream of change

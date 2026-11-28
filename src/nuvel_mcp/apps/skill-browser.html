@@ -97,6 +97,53 @@
   let ready = false;
   let current = null;  // the skill on screen: {theme, name}
 
+  // Visit counts (nuvel.ui_event/2): ids from the published catalogue and how
+  // often each happened, never anything the user typed or read. Sent once,
+  // when the host tears the view down, and only when browse_skills said so.
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  function uuid() {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+  function installId() {
+    // Sandboxed views usually have no storage: then each view counts as its own install.
+    try {
+      const key = "nuvel-skill-browser.install";
+      let id = localStorage.getItem(key);
+      if (!id || !UUID.test(id)) { id = uuid(); localStorage.setItem(key, id); }
+      return id;
+    } catch (err) {
+      return uuid();
+    }
+  }
+  const visit = { started: Date.now(), firstAction: null, events: {}, settings: null,
+                  sent: false, runId: uuid(), installId: installId() };
+
+  function count(id) {
+    if (visit.firstAction === null) visit.firstAction = Date.now();
+    visit.events[id] = (visit.events[id] || 0) + 1;
+  }
+
+  function sendVisit() {
+    const settings = visit.settings;
+    if (visit.sent || !settings || settings.record !== true) return Promise.resolve();
+    visit.sent = true;
+    const secs = (ms) => Math.min(86400, Math.max(0, Math.round(ms / 1000)));
+    const event = {
+      schema: settings.schema, run_id: visit.runId, install_id: visit.installId,
+      plugin: settings.plugin, surface: "skill-browser", host: "other",
+      started_at: new Date(visit.started).toISOString(),
+      duration_s: secs(Date.now() - visit.started), events: visit.events,
+    };
+    if (visit.firstAction !== null) event.first_action_s = secs(visit.firstAction - visit.started);
+    const sent = request("tools/call", { name: "record_ui_event", arguments: { event } });
+    const timeout = new Promise((resolve) => setTimeout(resolve, 2000));
+    return Promise.race([sent, timeout]).catch(() => {});
+  }
+
   const $ = (id) => document.getElementById(id);
 
   function send(message) { host.postMessage(message, "*"); }
@@ -134,6 +181,7 @@
   }
 
   function renderList(data) {
+    if (data.visits && typeof data.visits === "object") visit.settings = data.visits;
     const items = Array.isArray(data.skills) ? data.skills
                 : Array.isArray(data.results) ? data.results : [];
     const list = $("results");
@@ -166,6 +214,7 @@
   }
 
   async function search(query) {
+    count("search");
     setStatus($("status"), "Searching…");
     try {
       const args = query ? { query } : {};
@@ -176,6 +225,7 @@
   }
 
   async function openSkill(theme, name) {
+    count("open_skill");
     current = { theme, name };
     $("list-view").hidden = true;
     $("skill-view").hidden = false;
@@ -194,6 +244,7 @@
   }
 
   function showList() {
+    count("back");
     current = null;
     $("skill-view").hidden = true;
     $("list-view").hidden = false;
@@ -215,7 +266,9 @@
   }
 
   function onHostRequest(message) {
-    if (message.method === "ui/resource-teardown" || message.method === "ping") {
+    if (message.method === "ui/resource-teardown") {
+      sendVisit().then(() => respond(message.id, {}));
+    } else if (message.method === "ping") {
       respond(message.id, {});
     } else {
       send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
@@ -266,9 +319,12 @@
   $("back").addEventListener("click", showList);
   $("use").addEventListener("click", () => {
     if (!current) return;
+    count("use_skill");
     request("ui/message", { role: "user", content: { type: "text",
       text: `Use the ${current.name} skill.` } }).catch(() => {});
   });
+
+  window.addEventListener("pagehide", () => { sendVisit(); });
 
   let lastSize = "";
   new ResizeObserver(() => {

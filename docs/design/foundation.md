@@ -324,9 +324,12 @@ render them, among others.
   `structuredContent` result. The view is extra, never required.
 - **Telemetry.** A view reports its visit through `record_ui_event` (app-only), which
   already exists and is content-free. A new `surface` value per view goes in the
-  `ui_event` catalogue. Not done for the skill browser: `nuvel.ui_event/1` describes a
-  plugin's surface (a plugin name and version, the plugin's event catalogue), and the
-  browser belongs to the server, so it needs a schema decision first.
+  `ui_event` catalogue. For the skill browser, which belongs to the server rather than a
+  plugin, that took a new version: `nuvel.ui_event/2` adds the `skill-browser` surface,
+  recorded under plugin `nuvel-mcp`, with its event catalogue (`search`, `open_skill`,
+  `use_skill`, `back`) checked by the server. The view sends its visit when the host tears
+  it down (`ui/resource-teardown`, which hosts must send and wait on), and only when
+  `browse_skills` says `record_ui_event` is offered.
 - **First view.** A skill browser: search and read, built on `get_skill` and one new
   read-only tool, `browse_skills`, which opens the view and returns the same matches as
   `structuredContent` and text. Built (`extensions/apps.py`, `apps/skill-browser.html`).

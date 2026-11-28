@@ -128,6 +128,12 @@ def test_the_view_in_a_browser(hub, tmp_path):
             ["node", str(Path(__file__).with_name("apps_host.js")), httpd.url + "/mcp",
              str(view_file), str(shots)],
             capture_output=True, text=True, timeout=120)
+        health = None
+        if run.returncode == 0:
+            message = modern("tools/call", {"name": "check_skill_health", "arguments": {
+                "plugin": "nuvel-mcp", "skill_name": "skill-browser"}})
+            status, _, body = post_modern(httpd, message)
+            health = json.loads(body["result"]["content"][0]["text"])
     finally:
         httpd.stop()
         thread.join(TIMEOUT)
@@ -146,3 +152,20 @@ def test_the_view_in_a_browser(hub, tmp_path):
         assert "tools/call" in log["methods"] and log["sizes"]
         assert log["messages"] == [{"role": "user",
                                     "content": {"type": "text", "text": "Use the onboarding skill."}}]
+        # Teardown: the visit went out before the view answered.
+        assert log["tornDown"] and log["toolCalls"][-1] == "record_ui_event"
+    # One visit per page (desktop, phone), each: one search, one skill opened, used once.
+    assert health["ui"]["last_30_days"] == {
+        "visits": 2, "events": {"open_skill": 2, "search": 2, "use_skill": 2}}
+
+
+def test_the_view_records_visits_only_where_record_ui_event_is_offered(hub):
+    loader = SkillsLoader.from_base(hub)
+    on = result(SkillsMCPServer(loader), "tools/call", {"name": "browse_skills", "arguments": {}})
+    assert on["structuredContent"]["visits"] == {
+        "record": True, "schema": "nuvel.ui_event/2",
+        "plugin": {"name": "nuvel-mcp", "version": on["_meta"][
+            "io.modelcontextprotocol/serverInfo"]["version"]}}
+    off = SkillsMCPServer(loader, tools=frozenset({"browse_skills", "get_skill"}))
+    called = result(off, "tools/call", {"name": "browse_skills", "arguments": {}})
+    assert called["structuredContent"]["visits"] == {"record": False}

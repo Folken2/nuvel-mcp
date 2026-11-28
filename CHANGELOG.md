@@ -18,6 +18,13 @@ From here on the package is versioned and released on its own.
   browser (`ui://nuvel-skills/skill-browser`): search the hub, read a skill,
   and send "Use the <name> skill." to the chat. A self-contained HTML file in
   the package; no network, no CSP declared.
+- `nuvel.ui_event/2` (`schemas/ui_event.v2.schema.json`): version 1 plus the
+  server-owned `skill-browser` surface, recorded with plugin `nuvel-mcp`; its
+  event ids are checked against the server's catalogue (`search`,
+  `open_skill`, `use_skill`, `back`). `record_ui_event` accepts both versions
+  (its `event` input is a `oneOf`), and version 1 events are unchanged.
+- The skill browser records one visit when the host closes it, only when
+  `record_ui_event` is offered; `browse_skills` tells it so (`visits`).
 - `browse_skills`: opens the skill browser through `_meta.ui.resourceUri`, and
   returns up to 50 matches (or the catalog without a query) as text and
   `structuredContent` for hosts without Apps. Read scope; on by default over
